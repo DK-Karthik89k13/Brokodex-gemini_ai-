@@ -36,9 +36,10 @@ Available tools:
 - run_bash(command)
 
 Rules:
-- Use tools to fix the failing test
-- Do NOT explain anything
-- Do NOT add text outside JSON
+- Use tools to fix the failing test.
+- Paths should be relative to the repository root.
+- Do NOT explain anything.
+- Do NOT add text outside JSON.
 """
 
 def main():
@@ -49,63 +50,64 @@ def main():
     parser.add_argument("--prompt-log", required=True)
     args = parser.parse_args()
 
-    # Get the API Key from environment
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("❌ GEMINI_API_KEY not set")
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-pro")
+    # Using 1.5-flash for faster iterations, swap to 1.5-pro for complex logic
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
     test_cmd = (
         "python -m pytest "
         "openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending -xvs"
     )
 
+    # Pre-check
     result = run(test_cmd, args.repo_path)
     if result.returncode == 0:
         print("✅ Test already passes — invalid task")
         return
 
-    # Gemini uses a ChatSession to manage history easily
     chat = model.start_chat(history=[])
     
     system_instruction = (
         "You are a senior engineer fixing a failing test.\n"
+        "The repository is located at " + args.repo_path + "\n"
         "Stop ONLY after the test passes.\n\n"
         + TOOL_INSTRUCTIONS
     )
 
-    initial_prompt = (
+    current_prompt = (
         f"{system_instruction}\n\n"
-        f"Repository path: {args.repo_path}\n\n"
-        f"Failing test:\n{test_cmd}\n\n"
-        f"Failure output:\n{result.stdout}\n{result.stderr}"
+        f"Failing test output:\n{result.stdout}\n{result.stderr}"
     )
 
     os.makedirs(os.path.dirname(args.log_path), exist_ok=True)
 
-    # Simple loop for the agent's thought/act cycle
-    current_prompt = initial_prompt
     for i in range(15):
         print(f"--- Iteration {i+1} ---")
         response = chat.send_message(current_prompt)
         response_text = response.text.strip()
         
-        # Log the response
         with open(args.log_path, "a", encoding="utf-8") as log:
-            log.write(f"\nIteration {i+1} Response:\n{response_text}\n")
+            log.write(f"\n--- Iteration {i+1} ---\n{response_text}\n")
 
         try:
-            # Basic cleanup in case Gemini wraps JSON in markdown blocks
-            clean_json = response_text.replace("```json", "").replace("```", "").strip()
-            action = json.loads(clean_json)
+            # Clean markdown JSON blocks
+            clean_json = response_text
+            if "```json" in clean_json:
+                clean_json = clean_json.split("```json")[1].split("```")[0]
+            elif "```" in clean_json:
+                clean_json = clean_json.split("```")[1].split("```")[0]
             
+            action = json.loads(clean_json.strip())
             tool_name = action.get("tool")
             tool_args = action.get("args", {})
 
             if tool_name in TOOLS:
-                print(f"Executing {tool_name}...")
+                print(f"Executing {tool_name} with args {tool_args}...")
+                # We assume tools internally handle prepending repo_path if needed
                 tool_result = TOOLS[tool_name](**tool_args)
                 current_prompt = f"Tool result:\n{tool_result}"
             else:
@@ -114,9 +116,11 @@ def main():
         except Exception as e:
             current_prompt = f"Error parsing JSON or executing tool: {str(e)}"
 
-        # Check if the test passes after the fix
+        # Check for success
         if run(test_cmd, args.repo_path).returncode == 0:
             print("✅ Fix successful! Test passes.")
+            with open(args.log_path, "a") as log:
+                log.write("\nFix successful!")
             break
 
 if __name__ == "__main__":
