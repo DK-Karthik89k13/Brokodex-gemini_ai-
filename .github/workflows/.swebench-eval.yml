@@ -27,9 +27,20 @@ jobs:
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
 
+      # ------------------------------------------------------------
+      # 3. Setup target repository at fixed commit
+      # ------------------------------------------------------------
       - name: Setup OpenLibrary repository
         shell: bash
-        run: bash scripts/setup_repository.sh | tee /workspace/artifacts/setup.log
+        run: |
+          # Debug: List files to see where we are
+          ls -R scripts/
+          
+          # Ensure script is executable
+          chmod +x scripts/setup_repository.sh
+          
+          # Run the script
+          ./scripts/setup_repository.sh | tee /workspace/artifacts/setup.log
 
       - name: Pre-verification test (expected to fail)
         shell: bash
