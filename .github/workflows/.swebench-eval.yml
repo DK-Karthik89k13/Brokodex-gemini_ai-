@@ -17,6 +17,7 @@ jobs:
 
     env:
       TASK_ID: ${{ github.event.inputs.task_id }}
+      PYTHONPATH: /testbed
 
     steps:
       - name: Checkout evaluation repository
@@ -30,33 +31,32 @@ jobs:
       - name: Setup OpenLibrary repository
         shell: bash
         run: |
+          set -e
           echo "--- Starting Inline Repository Setup ---"
-          # Extract commit hash
+
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
           echo "Target Commit: $COMMIT_HASH"
-          
+
           if [ ! -d "/testbed/.git" ]; then
             git clone https://github.com/internetarchive/openlibrary.git /testbed
           fi
-          
+
           cd /testbed
+          git fetch --all
           git checkout "$COMMIT_HASH"
 
-          # 1. Install System SDKs and Headers
-          # libpq-dev is for PostgreSQL, build-essential is for the C compiler (gcc)
-          apt-get update && apt-get install -y libpq-dev build-essential
+          # System dependencies
+          apt-get update && apt-get install -y \
+            libpq-dev \
+            build-essential
 
-          # 2. Pre-install Python build tools and Cython
+          # Python tooling only (NO repo install)
           python -m pip install --upgrade pip
           pip install Cython setuptools wheel
 
-          # 3. Install OpenLibrary without isolation
-          # This tells pip to use the Cython we just installed manually.
-          echo "Installing OpenLibrary in editable mode..."
-          pip install --no-build-isolation -e .
-          
+          echo "PYTHONPATH set to /testbed"
           echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log
-    
+
       - name: Pre-verification test (expected to fail)
         shell: bash
         run: |
@@ -111,7 +111,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          python -c "
+          python - <<'EOF'
           import json, os
           log_path = '/workspace/artifacts/agent.log'
           metrics = {'status': 'failed', 'iterations': 0}
@@ -119,10 +119,11 @@ jobs:
               with open(log_path) as f:
                   content = f.read()
                   metrics['iterations'] = content.count('--- Iteration')
-                  if 'Fix successful' in content: metrics['status'] = 'passed'
+                  if 'Fix successful' in content:
+                      metrics['status'] = 'passed'
           with open('/workspace/artifacts/result.json', 'w') as f:
               json.dump(metrics, f, indent=2)
-          "
+          EOF
 
       - name: Upload evaluation artifacts
         uses: actions/upload-artifact@v4
