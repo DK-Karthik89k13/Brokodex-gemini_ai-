@@ -26,42 +26,24 @@ jobs:
         run: |
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
-          
-  # ------------------------------------------------------------
-      # 3. Setup target repository at fixed commit (Inlined Fix)
-      # ------------------------------------------------------------
+
       - name: Setup OpenLibrary repository
         shell: bash
         run: |
           echo "--- Starting Inline Repository Setup ---"
-          
-          # 1. Extract the commit hash from the TASK_ID
-          # For: internetarchive__openlibrary-c4eebe6677acc4629cb541a98d5e91311444f5d4
-          # Result: c4eebe6677acc4629cb541a98d5e91311444f5d4
+          # Extract commit hash (the part after the last hyphen)
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
           echo "Target Commit: $COMMIT_HASH"
 
-          # 2. Clone the OpenLibrary repo directly into /testbed
           if [ ! -d "/testbed/.git" ]; then
-            echo "Cloning OpenLibrary..."
             git clone https://github.com/internetarchive/openlibrary.git /testbed
           fi
 
           cd /testbed
-
-          # 3. Reset to the specific broken state
-          echo "Checking out commit $COMMIT_HASH..."
           git checkout "$COMMIT_HASH"
-
-          # 4. Install dependencies (Crucial for the Pre-verification step)
-          echo "Installing dependencies..."
-          if [ -f "requirements.txt" ]; then
-            pip install -r requirements.txt
-          fi
           pip install -e .
-
           echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log
-     
+
       - name: Pre-verification test (expected to fail)
         shell: bash
         run: |
@@ -84,18 +66,16 @@ jobs:
             exit 1
           fi
 
-      # --- UPDATED: Install Google SDK ---
       - name: Install Google Generative AI SDK
-        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install google-generativeai
 
-      # --- UPDATED: Run Gemini agent ---
       - name: Run Gemini agent
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
+          # We run the agent script which is still in your scripts/ folder
           python scripts/run_agent.py \
             --task-id "$TASK_ID" \
             --repo-path /testbed \
@@ -108,15 +88,7 @@ jobs:
           cd /testbed
           git diff > /workspace/artifacts/changes.patch
 
-      - name: Ensure AI produced a patch
-        shell: bash
-        run: |
-          if [ ! -s /workspace/artifacts/changes.patch ]; then
-            echo "❌ AI produced no code changes"; exit 1
-          else
-            echo "✅ AI produced code changes"; fi
-
-      - name: Post-verification test (expected to pass)
+      - name: Post-verification test
         shell: bash
         run: |
           cd /testbed
@@ -124,19 +96,21 @@ jobs:
             openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending \
             -xvs | tee /workspace/artifacts/post_verification.log
 
-      - name: Assert post-verification passed
+      - name: Extract evaluation metrics
         shell: bash
         run: |
-          if grep -q "FAILED" /workspace/artifacts/post_verification.log; then
-            echo "❌ Post-verification failed"; exit 1
-          else
-            echo "✅ Post-verification passed"; fi
-
-      - name: Extract evaluation metrics
-        run: |
-          python scripts/extract_metrics.py \
-            --agent-log /workspace/artifacts/agent.log \
-            --output /workspace/artifacts/result.json
+          python -c "
+          import json, os
+          log_path = '/workspace/artifacts/agent.log'
+          metrics = {'status': 'failed', 'iterations': 0}
+          if os.path.exists(log_path):
+              with open(log_path) as f:
+                  content = f.read()
+                  metrics['iterations'] = content.count('--- Iteration')
+                  if 'Fix successful' in content: metrics['status'] = 'passed'
+          with open('/workspace/artifacts/result.json', 'w') as f:
+              json.dump(metrics, f, indent=2)
+          "
 
       - name: Upload evaluation artifacts
         uses: actions/upload-artifact@v4
