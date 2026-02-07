@@ -26,30 +26,35 @@ jobs:
         run: |
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
-
       - name: Setup OpenLibrary repository
         shell: bash
         run: |
           echo "--- Starting Inline Repository Setup ---"
+          # Extract commit hash from TASK_ID
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
+          echo "Target Commit: $COMMIT_HASH"
           
           if [ ! -d "/testbed/.git" ]; then
             git clone https://github.com/internetarchive/openlibrary.git /testbed
           fi
-
+          
           cd /testbed
           git checkout "$COMMIT_HASH"
 
-          # Install system dependencies, build tools, and the repo
-          apt-get update && apt-get install -y libpq-dev
+          # 1. Install system dependencies (required for many Python C-extensions)
+          apt-get update && apt-get install -y libpq-dev build-essential
+
+          # 2. Pre-install build dependencies in the main environment
           python -m pip install --upgrade pip
           pip install Cython setuptools wheel
-          
-          # Use --no-build-isolation to ensure Cython is recognized
+
+          # 3. Install OpenLibrary using the system environment (no isolation)
+          # This allows the setup script to see the Cython we just installed.
+          echo "Installing OpenLibrary in editable mode..."
           pip install --no-build-isolation -e .
           
           echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log
-
+    
       - name: Pre-verification test (expected to fail)
         shell: bash
         run: |
