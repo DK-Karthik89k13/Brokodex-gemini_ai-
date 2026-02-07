@@ -1,51 +1,36 @@
-name: SWE-bench Gemini Evaluation
+name: SWE-bench Pro Evaluation (Gemini)
 
 on:
   workflow_dispatch:
     inputs:
       task_id:
-        description: "SWE-bench task ID"
+        description: 'Task ID to run'
         required: true
-        default: "internetarchive__openlibrary-c4eebe6677acc4629cb541a98d5e91311444f5d4"
+        default: 'internetarchive__openlibrary-c4eebe6677acc4629cb541a98d5e91311444f5d4'
 
 jobs:
   evaluate:
     runs-on: ubuntu-latest
-
     container:
       image: manojva/openlibrary-python312:latest
       options: --user root
 
     env:
       TASK_ID: ${{ github.event.inputs.task_id }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
     steps:
-      # ------------------------------------------------------------
-      # 1. Checkout evaluator repository
-      # ------------------------------------------------------------
-      - name: Checkout repository
+      - name: Checkout evaluation repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # 2. Prepare directories
-      # ------------------------------------------------------------
       - name: Prepare directories
         run: |
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
 
-      # ------------------------------------------------------------
-      # 3. Setup target repository
-      # ------------------------------------------------------------
       - name: Setup OpenLibrary repository
         shell: bash
-        run: |
-          bash scripts/setup_repository.sh | tee /workspace/artifacts/setup.log
+        run: bash scripts/setup_repository.sh | tee /workspace/artifacts/setup.log
 
-      # ------------------------------------------------------------
-      # 4. Pre-verification (must FAIL)
-      # ------------------------------------------------------------
       - name: Pre-verification test (expected to fail)
         shell: bash
         run: |
@@ -57,32 +42,28 @@ jobs:
           echo $? > /workspace/artifacts/pre_verification.exit
           exit 0
 
-      # ------------------------------------------------------------
-      # 5. Assert pre-verification failed
-      # ------------------------------------------------------------
       - name: Assert pre-verification failed
         shell: bash
         run: |
           EXIT_CODE=$(cat /workspace/artifacts/pre_verification.exit)
-          if [ "$EXIT_CODE" -eq 0 ]; then
-            echo "❌ Test unexpectedly passed"
-            exit 1
-          else
+          if [ "$EXIT_CODE" -ne 0 ]; then
             echo "✅ Pre-verification failed as expected"
+          else
+            echo "❌ Pre-verification unexpectedly passed"
+            exit 1
           fi
 
-      # ------------------------------------------------------------
-      # 6. Install Gemini SDK
-      # ------------------------------------------------------------
-      - name: Install Gemini SDK
+      # --- UPDATED: Install Google SDK ---
+      - name: Install Google Generative AI SDK
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install google-generativeai
 
-      # ------------------------------------------------------------
-      # 7. Run Gemini agent
-      # ------------------------------------------------------------
+      # --- UPDATED: Run Gemini agent ---
       - name: Run Gemini agent
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python scripts/run_agent.py \
             --task-id "$TASK_ID" \
@@ -90,31 +71,20 @@ jobs:
             --log-path /workspace/artifacts/agent.log \
             --prompt-log /workspace/artifacts/prompts.md
 
-      # ------------------------------------------------------------
-      # 8. Capture code changes
-      # ------------------------------------------------------------
       - name: Capture code changes
         shell: bash
         run: |
           cd /testbed
           git diff > /workspace/artifacts/changes.patch
 
-      # ------------------------------------------------------------
-      # 9. Ensure agent made changes
-      # ------------------------------------------------------------
       - name: Ensure AI produced a patch
         shell: bash
         run: |
           if [ ! -s /workspace/artifacts/changes.patch ]; then
-            echo "❌ AI produced no code changes"
-            exit 1
+            echo "❌ AI produced no code changes"; exit 1
           else
-            echo "✅ AI produced code changes"
-          fi
+            echo "✅ AI produced code changes"; fi
 
-      # ------------------------------------------------------------
-      # 10. Post-verification (must PASS)
-      # ------------------------------------------------------------
       - name: Post-verification test (expected to pass)
         shell: bash
         run: |
@@ -123,24 +93,22 @@ jobs:
             openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending \
             -xvs | tee /workspace/artifacts/post_verification.log
 
-      # ------------------------------------------------------------
-      # 11. Assert post-verification passed
-      # ------------------------------------------------------------
       - name: Assert post-verification passed
         shell: bash
         run: |
           if grep -q "FAILED" /workspace/artifacts/post_verification.log; then
-            echo "❌ Post-verification failed"
-            exit 1
+            echo "❌ Post-verification failed"; exit 1
           else
-            echo "✅ Post-verification passed"
-          fi
+            echo "✅ Post-verification passed"; fi
 
-      # ------------------------------------------------------------
-      # 12. Upload artifacts
-      # ------------------------------------------------------------
-      - name: Upload artifacts
+      - name: Extract evaluation metrics
+        run: |
+          python scripts/extract_metrics.py \
+            --agent-log /workspace/artifacts/agent.log \
+            --output /workspace/artifacts/result.json
+
+      - name: Upload evaluation artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: swebench-gemini-artifacts
+          name: swebench-eval-artifacts
           path: /workspace/artifacts
