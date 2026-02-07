@@ -1,23 +1,30 @@
 #!/bin/bash
 set -e
 
-# These variables are usually passed from your workflow env
-# REPO_NAME="internetarchive/openlibrary"
-# BASE_COMMIT="<the_commit_hash_from_swe_bench>"
+echo "--- Starting Repository Setup ---"
+echo "Task ID: $TASK_ID"
 
-echo "Setting up repository: $REPO_NAME at commit $BASE_COMMIT"
-
-# 1. Clone the target repository into a 'testbed' directory
-git clone https://github.com/$REPO_NAME /testbed
-cd /testbed
-
-# 2. Reset to the specific version the agent needs to fix
-git reset --hard $BASE_COMMIT
-
-# 3. Install the specific dependencies for OpenLibrary
-# OpenLibrary often uses pip or a specific requirements file
-if [ -f "requirements.txt" ]; then
-    pip install -r requirements.txt
+# 1. Clone the OpenLibrary repository into /testbed
+# We use /testbed because your workflow logic points there
+if [ ! -d "/testbed/.git" ]; then
+    echo "Cloning OpenLibrary..."
+    git clone https://github.com/internetarchive/openlibrary.git /testbed
+else
+    echo "Testbed already exists, skipping clone."
 fi
 
-echo "Repository setup complete at /testbed"
+cd /testbed
+
+# 2. Checkout the specific broken state
+# For the specific task ID in your default input:
+# internetarchive__openlibrary-c4eebe6677acc4629cb541a98d5e91311444f5d4
+# The commit hash is the last part of the ID: c4eebe6677acc4629cb541a98d5e91311444f5d4
+COMMIT_HASH=$(echo $TASK_ID | rev | cut -d'-' -f1 | rev)
+
+echo "Checking out commit: $COMMIT_HASH"
+git checkout $COMMIT_HASH
+
+# 3. Optional: Install dependencies if not in the container image
+# pip install -e .
+
+echo "--- Setup Complete ---"
