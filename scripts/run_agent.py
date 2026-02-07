@@ -2,8 +2,10 @@ import os
 import json
 import argparse
 import subprocess
-import google.generativeai as genai
+from google import genai
+
 from tools import read_file, write_file, edit_file, run_bash
+
 
 def run(cmd, cwd):
     return subprocess.run(
@@ -13,6 +15,7 @@ def run(cmd, cwd):
         text=True,
         capture_output=True,
     )
+
 
 TOOLS = {
     "read_file": read_file,
@@ -42,6 +45,7 @@ Rules:
 - Do NOT add text outside JSON.
 """
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task-id", required=True)
@@ -54,9 +58,7 @@ def main():
     if not api_key:
         raise RuntimeError("❌ GEMINI_API_KEY not set")
 
-    genai.configure(api_key=api_key)
-    # Using 1.5-flash for faster iterations, swap to 1.5-pro for complex logic
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    client = genai.Client(api_key=api_key)
 
     test_cmd = (
         "python -m pytest "
@@ -69,11 +71,14 @@ def main():
         print("✅ Test already passes — invalid task")
         return
 
-    chat = model.start_chat(history=[])
-    
+    chat = client.chats.create(
+        model="gemini-1.5-flash",
+        history=[]
+    )
+
     system_instruction = (
         "You are a senior engineer fixing a failing test.\n"
-        "The repository is located at " + args.repo_path + "\n"
+        f"The repository is located at {args.repo_path}\n"
         "Stop ONLY after the test passes.\n\n"
         + TOOL_INSTRUCTIONS
     )
@@ -86,42 +91,40 @@ def main():
     os.makedirs(os.path.dirname(args.log_path), exist_ok=True)
 
     for i in range(15):
-        print(f"--- Iteration {i+1} ---")
+        print(f"--- Iteration {i + 1} ---")
+
         response = chat.send_message(current_prompt)
-        response_text = response.text.strip()
-        
+        response_text = response.candidates[0].content.parts[0].text.strip()
+
         with open(args.log_path, "a", encoding="utf-8") as log:
-            log.write(f"\n--- Iteration {i+1} ---\n{response_text}\n")
+            log.write(f"\n--- Iteration {i + 1} ---\n{response_text}\n")
 
         try:
-            # Clean markdown JSON blocks
             clean_json = response_text
             if "```json" in clean_json:
                 clean_json = clean_json.split("```json")[1].split("```")[0]
             elif "```" in clean_json:
                 clean_json = clean_json.split("```")[1].split("```")[0]
-            
+
             action = json.loads(clean_json.strip())
             tool_name = action.get("tool")
             tool_args = action.get("args", {})
 
             if tool_name in TOOLS:
-                print(f"Executing {tool_name} with args {tool_args}...")
-                # We assume tools internally handle prepending repo_path if needed
                 tool_result = TOOLS[tool_name](**tool_args)
                 current_prompt = f"Tool result:\n{tool_result}"
             else:
                 current_prompt = f"Error: Tool {tool_name} not found."
-        
+
         except Exception as e:
             current_prompt = f"Error parsing JSON or executing tool: {str(e)}"
 
-        # Check for success
         if run(test_cmd, args.repo_path).returncode == 0:
-            print("✅ Fix successful! Test passes.")
             with open(args.log_path, "a") as log:
                 log.write("\nFix successful!")
+            print("✅ Fix successful! Test passes.")
             break
+
 
 if __name__ == "__main__":
     main()
