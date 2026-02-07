@@ -31,10 +31,8 @@ jobs:
         shell: bash
         run: |
           echo "--- Starting Inline Repository Setup ---"
-          # Extract commit hash
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
-          echo "Target Commit: $COMMIT_HASH"
-
+          
           if [ ! -d "/testbed/.git" ]; then
             git clone https://github.com/internetarchive/openlibrary.git /testbed
           fi
@@ -42,17 +40,18 @@ jobs:
           cd /testbed
           git checkout "$COMMIT_HASH"
 
-          # --- FIX: Install build dependencies first ---
-          echo "Installing build tools..."
+          # 1. Install system dependencies and build tools
+          echo "Installing system dependencies and build tools..."
+          apt-get update && apt-get install -y libpq-dev
           python -m pip install --upgrade pip
           pip install Cython setuptools wheel
 
+          # 2. Install OpenLibrary
           echo "Installing OpenLibrary in editable mode..."
-          # Install the repo itself
+          # We use --no-build-isolation to ensure it uses the Cython we just installed
           pip install -e .
           
-          echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log
-      
+          echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log 
       - name: Pre-verification test (expected to fail)
         shell: bash
         run: |
