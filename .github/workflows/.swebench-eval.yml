@@ -31,8 +31,10 @@ jobs:
         shell: bash
         run: |
           echo "--- Starting Inline Repository Setup ---"
+          # Extract commit hash
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
-          
+          echo "Target Commit: $COMMIT_HASH"
+
           if [ ! -d "/testbed/.git" ]; then
             git clone https://github.com/internetarchive/openlibrary.git /testbed
           fi
@@ -40,17 +42,17 @@ jobs:
           cd /testbed
           git checkout "$COMMIT_HASH"
 
-          # --- FIX: Install build-time dependencies first ---
+          # --- FIX: Install build dependencies first ---
           echo "Installing build tools..."
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install Cython setuptools wheel
 
           echo "Installing OpenLibrary in editable mode..."
-          # Using --no-build-isolation can sometimes help with Cython 
-          # if standard install fails, but let's try standard first.
+          # Install the repo itself
           pip install -e .
           
           echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log
+      
       - name: Pre-verification test (expected to fail)
         shell: bash
         run: |
