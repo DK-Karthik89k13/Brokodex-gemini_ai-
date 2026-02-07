@@ -20,7 +20,7 @@ jobs:
       PYTHONPATH: /testbed
 
     steps:
-      - name: Checkout evaluation repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Prepare directories
@@ -32,26 +32,17 @@ jobs:
         shell: bash
         run: |
           set -e
-          echo "--- Starting Inline Repository Setup ---"
-
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
-          echo "Target Commit: $COMMIT_HASH"
-
           if [ ! -d "/testbed/.git" ]; then
             git clone https://github.com/internetarchive/openlibrary.git /testbed
           fi
-
           cd /testbed
           git fetch --all
           git checkout "$COMMIT_HASH"
 
-          apt-get update && apt-get install -y \
-            libpq-dev \
-            build-essential
-
+          apt-get update && apt-get install -y libpq-dev build-essential
           python -m pip install --upgrade pip
           pip install Cython setuptools wheel
-
           echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log
 
       - name: Pre-verification test (expected to fail)
@@ -76,16 +67,8 @@ jobs:
             exit 1
           fi
 
-      # 🔥 THIS IS THE IMPORTANT FIX
-      - name: Install Google GenAI SDK (CURRENT)
+      - name: Install Google GenAI SDK
         run: pip install --upgrade google-genai
-
-      - name: Verify GenAI install
-        run: |
-          python - <<'EOF'
-          from google import genai
-          print("GenAI SDK OK:", genai)
-          EOF
 
       - name: Run Gemini agent
         env:
