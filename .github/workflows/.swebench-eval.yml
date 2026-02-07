@@ -70,6 +70,7 @@ jobs:
       - name: Install Google GenAI SDK
         run: pip install --upgrade google-genai
 
+
       - name: Run Gemini agent
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
