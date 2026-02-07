@@ -26,11 +26,12 @@ jobs:
         run: |
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
+
       - name: Setup OpenLibrary repository
         shell: bash
         run: |
           echo "--- Starting Inline Repository Setup ---"
-          # Extract commit hash from TASK_ID
+          # Extract commit hash
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
           echo "Target Commit: $COMMIT_HASH"
           
@@ -41,15 +42,16 @@ jobs:
           cd /testbed
           git checkout "$COMMIT_HASH"
 
-          # 1. Install system dependencies (required for many Python C-extensions)
+          # 1. Install System SDKs and Headers
+          # libpq-dev is for PostgreSQL, build-essential is for the C compiler (gcc)
           apt-get update && apt-get install -y libpq-dev build-essential
 
-          # 2. Pre-install build dependencies in the main environment
+          # 2. Pre-install Python build tools and Cython
           python -m pip install --upgrade pip
           pip install Cython setuptools wheel
 
-          # 3. Install OpenLibrary using the system environment (no isolation)
-          # This allows the setup script to see the Cython we just installed.
+          # 3. Install OpenLibrary without isolation
+          # This tells pip to use the Cython we just installed manually.
           echo "Installing OpenLibrary in editable mode..."
           pip install --no-build-isolation -e .
           
