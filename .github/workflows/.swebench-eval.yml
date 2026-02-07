@@ -26,6 +26,7 @@ jobs:
         run: |
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
+
       - name: Setup OpenLibrary repository
         shell: bash
         run: |
@@ -39,44 +40,16 @@ jobs:
           cd /testbed
           git checkout "$COMMIT_HASH"
 
-          # 1. Install build tools globally
-          echo "Installing build dependencies..."
-          pip install --upgrade pip
+          # Install system dependencies, build tools, and the repo
+          apt-get update && apt-get install -y libpq-dev
+          python -m pip install --upgrade pip
           pip install Cython setuptools wheel
-
-          # 2. Install the repository
-          # --no-build-isolation is the key here: it tells pip to use 
-          # the Cython we just installed instead of a fresh empty env.
-          echo "Installing OpenLibrary..."
+          
+          # Use --no-build-isolation to ensure Cython is recognized
           pip install --no-build-isolation -e .
           
           echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log
 
-      - name: Setup OpenLibrary repository
-        shell: bash
-        run: |
-          echo "--- Starting Inline Repository Setup ---"
-          COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
-          
-          if [ ! -d "/testbed/.git" ]; then
-            git clone https://github.com/internetarchive/openlibrary.git /testbed
-          fi
-
-          cd /testbed
-          git checkout "$COMMIT_HASH"
-
-          # 1. Install system dependencies and build tools
-          echo "Installing system dependencies and build tools..."
-          apt-get update && apt-get install -y libpq-dev
-          python -m pip install --upgrade pip
-          pip install Cython setuptools wheel
-
-          # 2. Install OpenLibrary
-          echo "Installing OpenLibrary in editable mode..."
-          # We use --no-build-isolation to ensure it uses the Cython we just installed
-          pip install -e .
-          
-          echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log 
       - name: Pre-verification test (expected to fail)
         shell: bash
         run: |
@@ -100,15 +73,12 @@ jobs:
           fi
 
       - name: Install Google Generative AI SDK
-        run: |
-          python -m pip install --upgrade pip
-          pip install google-generativeai
+        run: pip install google-generativeai
 
       - name: Run Gemini agent
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          # We run the agent script which is still in your scripts/ folder
           python scripts/run_agent.py \
             --task-id "$TASK_ID" \
             --repo-path /testbed \
@@ -116,10 +86,11 @@ jobs:
             --prompt-log /workspace/artifacts/prompts.md
 
       - name: Capture code changes
+        if: always()
         shell: bash
         run: |
           cd /testbed
-          git diff > /workspace/artifacts/changes.patch
+          git diff > /workspace/artifacts/changes.patch || true
 
       - name: Post-verification test
         shell: bash
@@ -130,6 +101,7 @@ jobs:
             -xvs | tee /workspace/artifacts/post_verification.log
 
       - name: Extract evaluation metrics
+        if: always()
         shell: bash
         run: |
           python -c "
