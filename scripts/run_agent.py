@@ -3,48 +3,12 @@ import json
 import argparse
 import subprocess
 from google import genai
-
 from tools import read_file, write_file, edit_file, run_bash
 
-
 def run(cmd, cwd):
-    return subprocess.run(
-        cmd,
-        shell=True,
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-    )
+    return subprocess.run(cmd, shell=True, cwd=cwd, text=True, capture_output=True)
 
-
-TOOLS = {
-    "read_file": read_file,
-    "write_file": write_file,
-    "edit_file": edit_file,
-    "run_bash": run_bash,
-}
-
-TOOL_INSTRUCTIONS = """
-You may ONLY respond with valid JSON.
-FORMAT:
-{
-  "tool": "<tool_name>",
-  "args": { ... }
-}
-
-Available tools:
-- read_file(path)
-- write_file(path, content)
-- edit_file(path, old, new)
-- run_bash(command)
-
-Rules:
-- Use tools to fix the failing test.
-- Paths should be relative to the repository root.
-- Do NOT explain anything.
-- Do NOT add text outside JSON.
-"""
-
+TOOLS = {"read_file": read_file, "write_file": write_file, "edit_file": edit_file, "run_bash": run_bash}
 
 def main():
     parser = argparse.ArgumentParser()
@@ -60,10 +24,7 @@ def main():
 
     client = genai.Client(api_key=api_key)
 
-    test_cmd = (
-        "python -m pytest "
-        "openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending -xvs"
-    )
+    test_cmd = "python -m pytest openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending -xvs"
 
     # Pre-check
     result = run(test_cmd, args.repo_path)
@@ -71,28 +32,19 @@ def main():
         print("✅ Test already passes — invalid task")
         return
 
-    chat = client.chats.create(
-        model="gemini-1.5-flash",
-        history=[]
-    )
+    chat = client.chats.create(model="chat-bison-001", history=[])
 
     system_instruction = (
         "You are a senior engineer fixing a failing test.\n"
         f"The repository is located at {args.repo_path}\n"
-        "Stop ONLY after the test passes.\n\n"
-        + TOOL_INSTRUCTIONS
+        "Stop ONLY after the test passes.\n"
     )
 
-    current_prompt = (
-        f"{system_instruction}\n\n"
-        f"Failing test output:\n{result.stdout}\n{result.stderr}"
-    )
-
+    current_prompt = f"{system_instruction}\nFailing test output:\n{result.stdout}\n{result.stderr}"
     os.makedirs(os.path.dirname(args.log_path), exist_ok=True)
 
     for i in range(15):
         print(f"--- Iteration {i + 1} ---")
-
         response = chat.send_message(current_prompt)
         response_text = response.candidates[0].content.parts[0].text.strip()
 
@@ -125,6 +77,6 @@ def main():
             print("✅ Fix successful! Test passes.")
             break
 
-
 if __name__ == "__main__":
     main()
+
