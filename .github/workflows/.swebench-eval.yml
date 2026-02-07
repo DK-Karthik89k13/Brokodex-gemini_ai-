@@ -45,16 +45,13 @@ jobs:
           git fetch --all
           git checkout "$COMMIT_HASH"
 
-          # System dependencies
           apt-get update && apt-get install -y \
             libpq-dev \
             build-essential
 
-          # Python tooling only (NO repo install)
           python -m pip install --upgrade pip
           pip install Cython setuptools wheel
 
-          echo "PYTHONPATH set to /testbed"
           echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log
 
       - name: Pre-verification test (expected to fail)
@@ -79,20 +76,27 @@ jobs:
             exit 1
           fi
 
-      - name: Install Google Generative AI SDK
-        run: pip install google-generativeai
-        
+      # 🔥 THIS IS THE IMPORTANT FIX
+      - name: Install Google GenAI SDK (CURRENT)
+        run: pip install --upgrade google-genai
+
+      - name: Verify GenAI install
+        run: |
+          python - <<'EOF'
+          from google import genai
+          print("GenAI SDK OK:", genai)
+          EOF
+
       - name: Run Gemini agent
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python scripts/run_agent.py \
-          --task-id "$TASK_ID" \
-          --repo-path /testbed \
-          --log-path /workspace/artifacts/agent.log \
-          --prompt-log /workspace/artifacts/prompts.md
+            --task-id "$TASK_ID" \
+            --repo-path /testbed \
+            --log-path /workspace/artifacts/agent.log \
+            --prompt-log /workspace/artifacts/prompts.md
 
-      
       - name: Capture code changes
         if: always()
         shell: bash
