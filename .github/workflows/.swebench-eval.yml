@@ -27,16 +27,40 @@ jobs:
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
           
+  # ------------------------------------------------------------
+      # 3. Setup target repository at fixed commit (Inlined Fix)
+      # ------------------------------------------------------------
       - name: Setup OpenLibrary repository
         shell: bash
-        env:
-          REPO_NAME: "internetarchive/openlibrary"
-          BASE_COMMIT: ${{ github.event.inputs.base_commit || 'master' }} # Or a hardcoded SHA
         run: |
-          # The file must exist now!
-          chmod +x scripts/setup_repository.sh
-          ./scripts/setup_repository.sh | tee /workspace/artifacts/setup.log
+          echo "--- Starting Inline Repository Setup ---"
+          
+          # 1. Extract the commit hash from the TASK_ID
+          # For: internetarchive__openlibrary-c4eebe6677acc4629cb541a98d5e91311444f5d4
+          # Result: c4eebe6677acc4629cb541a98d5e91311444f5d4
+          COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
+          echo "Target Commit: $COMMIT_HASH"
 
+          # 2. Clone the OpenLibrary repo directly into /testbed
+          if [ ! -d "/testbed/.git" ]; then
+            echo "Cloning OpenLibrary..."
+            git clone https://github.com/internetarchive/openlibrary.git /testbed
+          fi
+
+          cd /testbed
+
+          # 3. Reset to the specific broken state
+          echo "Checking out commit $COMMIT_HASH..."
+          git checkout "$COMMIT_HASH"
+
+          # 4. Install dependencies (Crucial for the Pre-verification step)
+          echo "Installing dependencies..."
+          if [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          fi
+          pip install -e .
+
+          echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log
      
       - name: Pre-verification test (expected to fail)
         shell: bash
