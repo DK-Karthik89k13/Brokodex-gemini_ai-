@@ -26,22 +26,18 @@ jobs:
         run: |
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
-
-      # ------------------------------------------------------------
-      # 3. Setup target repository at fixed commit
-      # ------------------------------------------------------------
+          
       - name: Setup OpenLibrary repository
         shell: bash
+        env:
+          REPO_NAME: "internetarchive/openlibrary"
+          BASE_COMMIT: ${{ github.event.inputs.base_commit || 'master' }} # Or a hardcoded SHA
         run: |
-          # Debug: List files to see where we are
-          ls -R scripts/
-          
-          # Ensure script is executable
+          # The file must exist now!
           chmod +x scripts/setup_repository.sh
-          
-          # Run the script
           ./scripts/setup_repository.sh | tee /workspace/artifacts/setup.log
 
+     
       - name: Pre-verification test (expected to fail)
         shell: bash
         run: |
