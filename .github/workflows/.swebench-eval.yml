@@ -26,6 +26,31 @@ jobs:
         run: |
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
+      - name: Setup OpenLibrary repository
+        shell: bash
+        run: |
+          echo "--- Starting Inline Repository Setup ---"
+          COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
+          
+          if [ ! -d "/testbed/.git" ]; then
+            git clone https://github.com/internetarchive/openlibrary.git /testbed
+          fi
+
+          cd /testbed
+          git checkout "$COMMIT_HASH"
+
+          # 1. Install build tools globally
+          echo "Installing build dependencies..."
+          pip install --upgrade pip
+          pip install Cython setuptools wheel
+
+          # 2. Install the repository
+          # --no-build-isolation is the key here: it tells pip to use 
+          # the Cython we just installed instead of a fresh empty env.
+          echo "Installing OpenLibrary..."
+          pip install --no-build-isolation -e .
+          
+          echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log
 
       - name: Setup OpenLibrary repository
         shell: bash
