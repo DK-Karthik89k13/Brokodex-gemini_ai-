@@ -1,16 +1,75 @@
+#!/usr/bin/env python3
 import os
 import json
 import argparse
 import subprocess
-from google import genai
-from tools import read_file, write_file, edit_file, run_bash
+import re
+from datetime import datetime
 
-def run(cmd, cwd):
-    return subprocess.run(cmd, shell=True, cwd=cwd, text=True, capture_output=True)
+import google.genai as genai   # IMPORTANT: correct import
 
-TOOLS = {"read_file": read_file, "write_file": write_file, "edit_file": edit_file, "run_bash": run_bash}
+# ---------------- globals ----------------
+REPO_ROOT = None
+AGENT_LOG = None
 
+# ---------------- logging ----------------
+def log(entry):
+    entry["timestamp"] = datetime.utcnow().isoformat() + "Z"
+    with open(AGENT_LOG, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+# ---------------- tools ----------------
+def read_file(path):
+    full = os.path.join(REPO_ROOT, path)
+    try:
+        with open(full) as f:
+            return {"success": True, "content": f.read()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def write_file(path, content):
+    full = os.path.join(REPO_ROOT, path)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w") as f:
+        f.write(content)
+    return {"success": True}
+
+def edit_file(path, old, new):
+    full = os.path.join(REPO_ROOT, path)
+    with open(full) as f:
+        text = f.read()
+    if old not in text:
+        return {"success": False, "error": "old text not found"}
+    with open(full, "w") as f:
+        f.write(text.replace(old, new))
+    return {"success": True}
+
+def run_bash(cmd):
+    r = subprocess.run(
+        cmd,
+        shell=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    return {
+        "success": r.returncode == 0,
+        "stdout": r.stdout,
+        "stderr": r.stderr,
+        "returncode": r.returncode,
+    }
+
+TOOLS = {
+    "read_file": read_file,
+    "write_file": write_file,
+    "edit_file": edit_file,
+    "run_bash": run_bash,
+}
+
+# ---------------- main ----------------
 def main():
+    global REPO_ROOT, AGENT_LOG
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--repo-path", required=True)
@@ -18,65 +77,93 @@ def main():
     parser.add_argument("--prompt-log", required=True)
     args = parser.parse_args()
 
+    REPO_ROOT = args.repo_path
+    AGENT_LOG = args.log_path
+
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("❌ GEMINI_API_KEY not set")
+        raise RuntimeError("GEMINI_API_KEY not set")
 
     client = genai.Client(api_key=api_key)
 
-    test_cmd = "python -m pytest openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending -xvs"
+    model = "gemini-1.5-pro-latest"
 
-    # Pre-check
-    result = run(test_cmd, args.repo_path)
-    if result.returncode == 0:
-        print("✅ Test already passes — invalid task")
-        return
-
-    chat = client.chats.create(model="chat-bison-001", history=[])
-
-    system_instruction = (
-        "You are a senior engineer fixing a failing test.\n"
-        f"The repository is located at {args.repo_path}\n"
-        "Stop ONLY after the test passes.\n"
+    test_cmd = (
+        "python -m pytest "
+        "openlibrary/tests/core/test_imports.py::"
+        "TestImportItem::test_find_staged_or_pending -xvs"
     )
 
-    current_prompt = f"{system_instruction}\nFailing test output:\n{result.stdout}\n{result.stderr}"
-    os.makedirs(os.path.dirname(args.log_path), exist_ok=True)
+    # Pre-check
+    if run_bash(test_cmd)["returncode"] == 0:
+        print("Test already passes, exiting.")
+        return
+
+    system_prompt = """
+You are a senior Python engineer fixing failing tests in OpenLibrary.
+
+RULES:
+- Respond ONLY in JSON
+- Choose ONE action at a time
+- No markdown, no explanation
+- Format EXACTLY:
+
+{
+  "tool": "read_file | write_file | edit_file | run_bash",
+  "args": { ... }
+}
+
+Stop once tests pass.
+""".strip()
+
+    prompt = system_prompt
+    log({"type": "request", "content": prompt})
 
     for i in range(15):
         print(f"--- Iteration {i + 1} ---")
-        response = chat.send_message(current_prompt)
-        response_text = response.candidates[0].content.parts[0].text.strip()
 
-        with open(args.log_path, "a", encoding="utf-8") as log:
-            log.write(f"\n--- Iteration {i + 1} ---\n{response_text}\n")
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+        )
+
+        text = (response.text or "").strip()
+        log({"type": "response", "content": text})
+
+        # Robust JSON extraction
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            prompt = "Invalid response. Return ONLY valid JSON."
+            continue
 
         try:
-            clean_json = response_text
-            if "```json" in clean_json:
-                clean_json = clean_json.split("```json")[1].split("```")[0]
-            elif "```" in clean_json:
-                clean_json = clean_json.split("```")[1].split("```")[0]
-
-            action = json.loads(clean_json.strip())
-            tool_name = action.get("tool")
-            tool_args = action.get("args", {})
-
-            if tool_name in TOOLS:
-                tool_result = TOOLS[tool_name](**tool_args)
-                current_prompt = f"Tool result:\n{tool_result}"
-            else:
-                current_prompt = f"Error: Tool {tool_name} not found."
-
+            action = json.loads(match.group(0))
+            tool = action["tool"]
+            args = action["args"]
         except Exception as e:
-            current_prompt = f"Error parsing JSON or executing tool: {str(e)}"
+            prompt = f"Invalid JSON structure: {e}"
+            continue
 
-        if run(test_cmd, args.repo_path).returncode == 0:
-            with open(args.log_path, "a") as log:
-                log.write("\nFix successful!")
-            print("✅ Fix successful! Test passes.")
-            break
+        if tool not in TOOLS:
+            prompt = f"Unknown tool: {tool}"
+            continue
+
+        result = TOOLS[tool](**args)
+        log({
+            "type": "tool_use",
+            "tool": tool,
+            "args": args,
+            "result": result,
+        })
+
+        if run_bash(test_cmd)["returncode"] == 0:
+            print("✅ FIX SUCCESSFUL")
+            log({"type": "final", "status": "success"})
+            return
+
+        prompt = f"Tool result:\n{json.dumps(result, indent=2)}"
+
+    raise RuntimeError("Agent failed to fix task")
 
 if __name__ == "__main__":
     main()
-
