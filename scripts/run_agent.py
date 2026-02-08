@@ -4,9 +4,9 @@ import json
 import argparse
 import subprocess
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
-import google.genai as genai   # IMPORTANT: correct import
+import google.genai as genai
 
 # ---------------- globals ----------------
 REPO_ROOT = None
@@ -14,15 +14,15 @@ AGENT_LOG = None
 
 # ---------------- logging ----------------
 def log(entry):
-    entry["timestamp"] = datetime.utcnow().isoformat() + "Z"
-    with open(AGENT_LOG, "a") as f:
+    entry["timestamp"] = datetime.now(timezone.utc).isoformat()
+    with open(AGENT_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 
 # ---------------- tools ----------------
 def read_file(path):
     full = os.path.join(REPO_ROOT, path)
     try:
-        with open(full) as f:
+        with open(full, encoding="utf-8") as f:
             return {"success": True, "content": f.read()}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -30,17 +30,17 @@ def read_file(path):
 def write_file(path, content):
     full = os.path.join(REPO_ROOT, path)
     os.makedirs(os.path.dirname(full), exist_ok=True)
-    with open(full, "w") as f:
+    with open(full, "w", encoding="utf-8") as f:
         f.write(content)
     return {"success": True}
 
 def edit_file(path, old, new):
     full = os.path.join(REPO_ROOT, path)
-    with open(full) as f:
+    with open(full, encoding="utf-8") as f:
         text = f.read()
     if old not in text:
         return {"success": False, "error": "old text not found"}
-    with open(full, "w") as f:
+    with open(full, "w", encoding="utf-8") as f:
         f.write(text.replace(old, new))
     return {"success": True}
 
@@ -82,11 +82,12 @@ def main():
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY not set")
+        raise RuntimeError("❌ GEMINI_API_KEY not set")
 
     client = genai.Client(api_key=api_key)
 
-    model = "gemini-1.5-pro-latest"
+    # ✅ EXACT MODEL YOU ASKED FOR
+    MODEL = "gemini-2.0-flash"
 
     test_cmd = (
         "python -m pytest "
@@ -96,24 +97,26 @@ def main():
 
     # Pre-check
     if run_bash(test_cmd)["returncode"] == 0:
-        print("Test already passes, exiting.")
+        print("✅ Test already passes. Exiting.")
         return
 
     system_prompt = """
 You are a senior Python engineer fixing failing tests in OpenLibrary.
 
-RULES:
-- Respond ONLY in JSON
-- Choose ONE action at a time
-- No markdown, no explanation
-- Format EXACTLY:
+STRICT RULES:
+- Respond ONLY with valid JSON
+- No markdown
+- No explanations
+- One action at a time
+
+Format EXACTLY:
 
 {
   "tool": "read_file | write_file | edit_file | run_bash",
   "args": { ... }
 }
 
-Stop once tests pass.
+Stop when tests pass.
 """.strip()
 
     prompt = system_prompt
@@ -123,14 +126,13 @@ Stop once tests pass.
         print(f"--- Iteration {i + 1} ---")
 
         response = client.models.generate_content(
-            model=model,
+            model=MODEL,
             contents=prompt,
         )
 
         text = (response.text or "").strip()
         log({"type": "response", "content": text})
 
-        # Robust JSON extraction
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if not match:
             prompt = "Invalid response. Return ONLY valid JSON."
@@ -163,7 +165,7 @@ Stop once tests pass.
 
         prompt = f"Tool result:\n{json.dumps(result, indent=2)}"
 
-    raise RuntimeError("Agent failed to fix task")
+    raise RuntimeError("❌ Agent failed to fix task")
 
 if __name__ == "__main__":
     main()
