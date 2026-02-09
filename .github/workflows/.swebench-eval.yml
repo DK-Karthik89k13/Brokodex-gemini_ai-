@@ -17,7 +17,7 @@ jobs:
 
     env:
       TASK_ID: ${{ github.event.inputs.task_id }}
-      PYTHONPATH: /testbed
+      PYTHONPATH: /testbed/openlibrary
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: gemini-1.5-pro
 
@@ -43,9 +43,12 @@ jobs:
       - name: Install Python dependencies
         shell: bash
         run: |
-          cd /testbed
+          cd /testbed/openlibrary
           python -m pip install --upgrade pip
-          pip install web.py pytest Cython setuptools wheel google-genai google-generativeai
+          pip install Cython setuptools wheel pytest web.py google-genai google-generativeai
+          pip install -e .
+        env:
+          PYTHONPATH: /testbed/openlibrary
 
       - name: Pre-verification test (expected to fail)
         shell: bash
@@ -75,6 +78,8 @@ jobs:
             --post-log /workspace/artifacts/post_verification.log \
             --results /workspace/artifacts/results.json \
             --model "$GEMINI_MODEL"
+        env:
+          PYTHONPATH: /testbed/openlibrary
 
       - name: Capture code changes
         if: always()
