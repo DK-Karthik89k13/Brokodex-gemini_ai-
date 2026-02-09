@@ -76,16 +76,22 @@ jobs:
           from google.genai import types
           print("google-genai OK")
           EOF
-
-
+          
       - name: Run Gemini agent
+        shell: bash
         run: |
           python scripts/run_agent.py \
-            --task-id "$TASK_ID" \
-            --repo-path /testbed \
-            --log-path /workspace/artifacts/agent.log \
-            --prompt-log /workspace/artifacts/prompts.md \
-            --model "$GEMINI_MODEL"
+          --task-id "$TASK_ID" \
+          --repo-path /testbed \
+          --log-path /workspace/artifacts/agent.log \
+          --prompt-log /workspace/artifacts/prompts.md \
+          --model "$GEMINI_MODEL"
+        env:
+          TASK_ID: internetarchive__openlibrary-c4eebe6677acc4629cb541a98d5e91311444f5d4
+          PYTHONPATH: /testbed
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-1.5-pro
+
 
       - name: Capture code changes
         if: always()
