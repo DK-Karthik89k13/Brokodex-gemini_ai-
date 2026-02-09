@@ -1,4 +1,4 @@
-name: SWE-bench Pro Evaluation (Gemini)
+name: SWE-bench Pro Evaluation (Gemma 3 27B)
 
 on:
   workflow_dispatch:
@@ -18,10 +18,17 @@ jobs:
     env:
       TASK_ID: ${{ github.event.inputs.task_id }}
       PYTHONPATH: /testbed
+      GOOGLE_APPLICATION_CREDENTIALS: /workspace/gcp-key.json
+      GCP_PROJECT: your-gcp-project-id
+      GCP_REGION: us-central1
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Write GCP credentials
+        run: |
+          echo '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}' > /workspace/gcp-key.json
 
       - name: Prepare directories
         run: |
@@ -33,9 +40,7 @@ jobs:
         run: |
           set -e
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
-          if [ ! -d "/testbed/.git" ]; then
-            git clone https://github.com/internetarchive/openlibrary.git /testbed
-          fi
+          git clone https://github.com/internetarchive/openlibrary.git /testbed || true
           cd /testbed
           git fetch --all
           git checkout "$COMMIT_HASH"
@@ -43,7 +48,6 @@ jobs:
           apt-get update && apt-get install -y libpq-dev build-essential
           python -m pip install --upgrade pip
           pip install Cython setuptools wheel
-          echo "--- Setup Complete ---" | tee /workspace/artifacts/setup.log
 
       - name: Pre-verification test (expected to fail)
         shell: bash
@@ -59,21 +63,12 @@ jobs:
       - name: Assert pre-verification failed
         shell: bash
         run: |
-          EXIT_CODE=$(cat /workspace/artifacts/pre_verification.exit)
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            echo "✅ Pre-verification failed as expected"
-          else
-            echo "❌ Pre-verification unexpectedly passed"
-            exit 1
-          fi
+          [ "$(cat /workspace/artifacts/pre_verification.exit)" -ne 0 ] || exit 1
 
-      - name: Install Google GenAI SDK
-        run: pip install --upgrade google-genai
+      - name: Install Vertex AI SDK
+        run: pip install --upgrade google-cloud-aiplatform
 
-
-      - name: Run Gemini agent
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      - name: Run Gemma 3 27B agent
         run: |
           python scripts/run_agent.py \
             --task-id "$TASK_ID" \
@@ -83,36 +78,16 @@ jobs:
 
       - name: Capture code changes
         if: always()
-        shell: bash
         run: |
           cd /testbed
           git diff > /workspace/artifacts/changes.patch || true
 
       - name: Post-verification test
-        shell: bash
         run: |
           cd /testbed
           python -m pytest \
             openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending \
             -xvs | tee /workspace/artifacts/post_verification.log
-
-      - name: Extract evaluation metrics
-        if: always()
-        shell: bash
-        run: |
-          python - <<'EOF'
-          import json, os
-          log_path = '/workspace/artifacts/agent.log'
-          metrics = {'status': 'failed', 'iterations': 0}
-          if os.path.exists(log_path):
-              with open(log_path) as f:
-                  content = f.read()
-                  metrics['iterations'] = content.count('--- Iteration')
-                  if 'Fix successful' in content:
-                      metrics['status'] = 'passed'
-          with open('/workspace/artifacts/result.json', 'w') as f:
-              json.dump(metrics, f, indent=2)
-          EOF
 
       - name: Upload evaluation artifacts
         uses: actions/upload-artifact@v4
