@@ -45,8 +45,7 @@ jobs:
         run: |
           cd /testbed/openlibrary
           python -m pip install --upgrade pip
-          pip install Cython setuptools wheel pytest web.py google-genai google-generativeai
-          pip install -e .
+          pip install Cython wheel pytest web.py google-genai google-generativeai
         env:
           PYTHONPATH: /testbed/openlibrary
 
