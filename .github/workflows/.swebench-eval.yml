@@ -69,6 +69,15 @@ jobs:
         run: |
           pip install --upgrade google-genai
 
+      - name: Debug Gemini install
+        run: |
+          python - << 'EOF'
+          from google import genai
+          from google.genai import types
+          print("google-genai OK")
+          EOF
+
+
       - name: Run Gemini agent
         run: |
           python scripts/run_agent.py \
