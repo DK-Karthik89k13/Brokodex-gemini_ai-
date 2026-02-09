@@ -31,7 +31,15 @@ def read_file(path):
 
 def write_file(path, content):
     Path(path).write_text(content)
-    return "ok"
+
+def extract_diff(text: str):
+    """
+    Gemini often wraps diffs in markdown or explanations.
+    This safely extracts a real git diff.
+    """
+    if "diff --git" not in text:
+        return None
+    return text[text.index("diff --git"):]
 
 # -------------------------
 # Agent
@@ -43,7 +51,10 @@ def main():
     ap.add_argument("--repo-path", required=True)
     ap.add_argument("--log-path", required=True)
     ap.add_argument("--prompt-log", required=True)
-    ap.add_argument("--model", default="gemini-1.5-flash")
+
+    # DO NOT default to unsupported models
+    ap.add_argument("--model", default="gemini-1.0-pro")
+
     args = ap.parse_args()
 
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -53,7 +64,7 @@ def main():
     client = Client(api_key=api_key)
 
     system_prompt = f"""
-You are an autonomous SWE-bench coding agent.
+You are an autonomous SWE-bench fixing agent.
 
 Task ID:
 {args.task_id}
@@ -61,23 +72,22 @@ Task ID:
 Repository path:
 {args.repo_path}
 
-Goal:
-Fix the failing test:
+Target failing test:
 openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending
 
 Rules:
-- Prefer staged/local ISBN records
-- Modify code directly in the repository
-- Output a unified git diff when ready
-- Stop after producing the fix
+- Prefer staged or local ISBN records over remote
+- Modify repository code directly
+- Output ONLY a unified git diff when ready
+- Do not include explanations once diff is produced
 """.strip()
 
     Path(args.prompt_log).write_text(system_prompt)
 
     logf = open(args.log_path, "w", buffering=1)
 
-    for iteration in range(1, 10):
-        log(logf, {"type": "iteration", "step": iteration})
+    for step in range(1, 8):
+        log(logf, {"type": "iteration", "step": step})
 
         response = client.models.generate_content(
             model=args.model,
@@ -89,21 +99,27 @@ Rules:
         )
 
         text = response.text or ""
-        log(logf, {"type": "response", "content": text})
+        log(logf, {"type": "model_response", "content": text})
 
-        # Apply patch if model outputs a diff
-        if "diff --git" in text:
-            patch = Path("/tmp/agent.patch")
-            patch.write_text(text)
-            run_bash(f"git apply {patch}", cwd=args.repo_path)
-            log(logf, {"type": "status", "result": "fix_applied"})
-            logf.close()
-            return
+        diff = extract_diff(text)
+        if diff:
+            patch_path = Path("/tmp/agent.patch")
+            patch_path.write_text(diff)
+
+            try:
+                run_bash(f"git apply {patch_path}", cwd=args.repo_path)
+                log(logf, {"type": "status", "result": "patch_applied"})
+                logf.close()
+                return
+            except subprocess.CalledProcessError as e:
+                log(logf, {
+                    "type": "error",
+                    "stage": "git_apply",
+                    "output": e.output
+                })
 
     logf.close()
-    raise RuntimeError("Agent failed to produce a fix")
+    raise RuntimeError("Agent failed to produce a valid fix")
 
 if __name__ == "__main__":
     main()
-
-
