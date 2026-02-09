@@ -30,6 +30,14 @@ jobs:
         run: |
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          cd /testbed
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || true  # If requirements.txt exists
+          pip install web.py pytest Cython setuptools wheel
+
 
       - name: Setup OpenLibrary repository
         shell: bash
