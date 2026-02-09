@@ -1,112 +1,190 @@
 #!/usr/bin/env python3
 import os
-import sys
-import time
+import json
 import argparse
+import subprocess
+import datetime
 from pathlib import Path
 
-import vertexai
-from vertexai.preview.generative_models import GenerativeModel
-from google.api_core.exceptions import ResourceExhausted, GoogleAPIError
+import google.generativeai as genai
+from google.generativeai.types import FunctionDeclaration, Tool
 
+# ------------------------
+# Utilities
+# ------------------------
 
-# ---------------- utils ----------------
-def fatal(msg: str):
-    print(f"\n❌ {msg}", file=sys.stderr)
-    sys.exit(1)
+def ts():
+    return datetime.datetime.utcnow().isoformat() + "Z"
 
+def log(fp, payload):
+    payload["timestamp"] = ts()
+    fp.write(json.dumps(payload) + "\n")
+    fp.flush()
 
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--task-id", required=True)
-    p.add_argument("--repo-path", required=True)
-    p.add_argument("--log-path", required=True)
-    p.add_argument("--prompt-log", required=True)
-    return p.parse_args()
+def run_bash(cmd, cwd):
+    return subprocess.check_output(
+        cmd, shell=True, cwd=cwd, text=True, stderr=subprocess.STDOUT
+    )
 
+def read_file(path):
+    return Path(path).read_text()
 
-# ---------------- auth ----------------
-def init_vertex():
-    project = os.environ.get("GCP_PROJECT")
-    region = os.environ.get("GCP_REGION", "us-central1")
+def write_file(path, content):
+    Path(path).write_text(content)
+    return "ok"
 
-    if not project:
-        fatal("GCP_PROJECT env var not set")
+def edit_file(path, diff):
+    p = Path("/tmp/agent.patch")
+    p.write_text(diff)
+    run_bash(f"git apply {p}", cwd="/")
+    return "patched"
 
-    vertexai.init(project=project, location=region)
+# ------------------------
+# Tool schema
+# ------------------------
 
+tools = Tool(
+    function_declarations=[
+        FunctionDeclaration(
+            name="read_file",
+            description="Read a file from disk",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"}
+                },
+                "required": ["path"]
+            },
+        ),
+        FunctionDeclaration(
+            name="write_file",
+            description="Write content to a file",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "content"],
+            },
+        ),
+        FunctionDeclaration(
+            name="run_bash",
+            description="Run a bash command",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "cmd": {"type": "string"},
+                    "cwd": {"type": "string"},
+                },
+                "required": ["cmd", "cwd"],
+            },
+        ),
+    ]
+)
 
-# ---------------- prompt ----------------
-def build_prompt(task_id: str, repo_path: str) -> str:
-    return f"""
-You are an autonomous senior Python engineer.
+# ------------------------
+# Agent loop
+# ------------------------
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--task-id", required=True)
+    ap.add_argument("--repo-path", required=True)
+    ap.add_argument("--log-path", required=True)
+    ap.add_argument("--prompt-log", required=True)
+    ap.add_argument("--model", default="gemini-1.5-flash",
+                    choices=["gemini-1.5-flash", "gemini-1.5-pro"])
+    args = ap.parse_args()
+
+    if "GEMINI_API_KEY" not in os.environ:
+        raise RuntimeError("GEMINI_API_KEY not set")
+
+    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+
+    model = genai.GenerativeModel(
+        model_name=args.model,
+        tools=tools,
+    )
+
+    system_prompt = f"""
+You are an autonomous SWE-bench coding agent.
 
 Task ID:
-{task_id}
+{args.task_id}
 
 Repository path:
-{repo_path}
+{args.repo_path}
 
-RULES:
-- Identify why the test is failing
-- Propose a FIX
-- Output ONLY a unified git diff
-- No explanations, no markdown, no extra text
-
-Target test:
-openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending
+Rules:
+- Fix failing test: TestImportItem::test_find_staged_or_pending
+- Prefer local staged ISBN records
+- Use tools to inspect and modify code
+- When done, STOP
 """
 
+    Path(args.prompt_log).write_text(system_prompt)
 
-# ---------------- main ----------------
-def main():
-    args = parse_args()
+    chat = model.start_chat(history=[
+        {"role": "user", "parts": [system_prompt]}
+    ])
 
-    repo_path = Path(args.repo_path)
-    if not repo_path.exists():
-        fatal(f"Repo path does not exist: {repo_path}")
+    logf = open(args.log_path, "w")
 
-    init_vertex()
+    for step in range(1, 15):
+        log(logf, {"type": "iteration", "step": step})
 
-    model = GenerativeModel("gemma-3-27b-it")
+        response = chat.send_message("Proceed")
 
-    prompt = build_prompt(args.task_id, args.repo_path)
-    Path(args.prompt_log).write_text(prompt)
+        for cand in response.candidates:
+            for part in cand.content.parts:
+                # ---- Tool call ----
+                if hasattr(part, "function_call"):
+                    fn = part.function_call.name
+                    argsd = dict(part.function_call.args)
 
-    log_file = open(args.log_path, "w", buffering=1)
+                    log(logf, {
+                        "type": "tool_use",
+                        "tool": fn,
+                        "args": argsd,
+                    })
 
-    max_iters = 5
-    backoff = 20
+                    if fn == "read_file":
+                        out = read_file(argsd["path"])
+                    elif fn == "write_file":
+                        out = write_file(argsd["path"], argsd["content"])
+                    elif fn == "run_bash":
+                        out = run_bash(argsd["cmd"], argsd["cwd"])
+                    else:
+                        out = "unknown tool"
 
-    for i in range(1, max_iters + 1):
-        print(f"\n--- Iteration {i} ---", file=log_file)
+                    chat.send_message({
+                        "role": "tool",
+                        "name": fn,
+                        "parts": [out],
+                    })
 
-        try:
-            response = model.generate_content(
-                prompt,
-                generation_config={
-                    "temperature": 0.2,
-                    "max_output_tokens": 2048,
-                },
-            )
+                # ---- Final text ----
+                elif hasattr(part, "text"):
+                    text = part.text
+                    log(logf, {"type": "response", "content": text})
 
-            text = response.text or ""
-            print(text, file=log_file)
+                    if "diff --git" in text:
+                        patch = Path("/tmp/final.patch")
+                        patch.write_text(text)
+                        run_bash(
+                            f"git apply {patch}",
+                            cwd=args.repo_path
+                        )
+                        log(logf, {
+                            "type": "status",
+                            "result": "Fix applied"
+                        })
+                        logf.close()
+                        return
 
-            if "diff --git" in text:
-                print("\nFix successful", file=log_file)
-                break
-
-        except ResourceExhausted:
-            wait = backoff * i
-            print(f"⚠️ Rate limited. Sleeping {wait}s...", file=log_file)
-            time.sleep(wait)
-
-        except GoogleAPIError as e:
-            fatal(f"Vertex AI error: {e}")
-
-    log_file.close()
-
+    logf.close()
+    raise RuntimeError("Agent failed to converge")
 
 if __name__ == "__main__":
     main()
