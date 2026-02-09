@@ -1,12 +1,12 @@
-name: SWE-bench Pro Evaluation (Gemma 3 27B)
+name: SWE-bench Pro Evaluation (Gemini)
 
 on:
   workflow_dispatch:
     inputs:
       task_id:
-        description: 'Task ID to run'
+        description: "Task ID to run"
         required: true
-        default: 'internetarchive__openlibrary-c4eebe6677acc4629cb541a98d5e91311444f5d4'
+        default: "internetarchive__openlibrary-c4eebe6677acc4629cb541a98d5e91311444f5d4"
 
 jobs:
   evaluate:
@@ -18,17 +18,12 @@ jobs:
     env:
       TASK_ID: ${{ github.event.inputs.task_id }}
       PYTHONPATH: /testbed
-      GOOGLE_APPLICATION_CREDENTIALS: /workspace/gcp-key.json
-      GCP_PROJECT: your-gcp-project-id
-      GCP_REGION: us-central1
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: gemini-1.5-pro
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Write GCP credentials
-        run: |
-          echo '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}' > /workspace/gcp-key.json
 
       - name: Prepare directories
         run: |
@@ -40,6 +35,7 @@ jobs:
         run: |
           set -e
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
+
           git clone https://github.com/internetarchive/openlibrary.git /testbed || true
           cd /testbed
           git fetch --all
@@ -65,16 +61,18 @@ jobs:
         run: |
           [ "$(cat /workspace/artifacts/pre_verification.exit)" -ne 0 ] || exit 1
 
-      - name: Install Vertex AI SDK
-        run: pip install --upgrade google-cloud-aiplatform
+      - name: Install Gemini SDK
+        run: |
+          pip install --upgrade google-generativeai
 
-      - name: Run Gemma 3 27B agent
+      - name: Run Gemini agent
         run: |
           python scripts/run_agent.py \
             --task-id "$TASK_ID" \
             --repo-path /testbed \
             --log-path /workspace/artifacts/agent.log \
-            --prompt-log /workspace/artifacts/prompts.md
+            --prompt-log /workspace/artifacts/prompts.md \
+            --model "$GEMINI_MODEL"
 
       - name: Capture code changes
         if: always()
