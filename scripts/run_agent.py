@@ -10,6 +10,17 @@ from google.genai import Client
 from google.genai.types import GenerateContentConfig
 
 # --------------------------------------------------
+# Paths
+# --------------------------------------------------
+
+AGENT_LOG = Path("agent.log")
+PROMPT_LOG = Path("prompts.md")
+PRE_LOG = Path("pre_validation.log")
+POST_LOG = Path("post_verification.log")
+PATCH_FILE = Path("changes.patch")
+RESULTS_FILE = Path("results.json")
+
+# --------------------------------------------------
 # Logging
 # --------------------------------------------------
 
@@ -25,18 +36,26 @@ def log(fp, payload):
 # Repo helpers
 # --------------------------------------------------
 
+def run(cmd, cwd: Path):
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        text=True,
+        capture_output=True
+    )
+
+def run_pytest(repo: Path):
+    result = run(["pytest", "-q"], repo)
+    return result.returncode == 0, result.stdout + result.stderr
+
 def find_imports_file(repo: Path) -> Path:
-    """
-    Locate the imports.py file that defines ImportItem.
-    """
     for p in repo.rglob("imports.py"):
         try:
-            txt = p.read_text()
-            if "class ImportItem" in txt:
+            if "class ImportItem" in p.read_text():
                 return p
         except Exception:
-            continue
-    raise FileNotFoundError("Could not find imports.py with ImportItem")
+            pass
+    raise FileNotFoundError("imports.py with ImportItem not found")
 
 FIX_SNIPPET = """
     @classmethod
@@ -66,70 +85,84 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task-id", required=True)
     ap.add_argument("--repo-path", required=True)
-    ap.add_argument("--log-path", required=True)
-    ap.add_argument("--prompt-log", required=True)
     ap.add_argument("--model", default="gemini-1.0-pro")
     args = ap.parse_args()
 
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY not set")
-
     repo = Path(args.repo_path)
 
-    client = Client(api_key=api_key)
+    api_key = os.environ.get("GEMINI_API_KEY")
 
+    # ---- Prompt ----
     system_prompt = f"""
-You are an SWE-bench fixing agent.
+Task ID: {args.task_id}
 
-Task:
 Fix failing test:
 openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending
 
-Expectation:
-- Prefer staged or pending local ImportItem records
-- Do not perform remote lookups
+Rules:
+- Prefer local staged or pending ImportItem records
+- No remote lookups
+- Validate using pytest
 """.strip()
 
-    Path(args.prompt_log).write_text(system_prompt)
+    PROMPT_LOG.write_text(system_prompt)
 
-    logf = open(args.log_path, "w", buffering=1)
+    logf = AGENT_LOG.open("w", buffering=1)
+    log(logf, {"type": "start", "task_id": args.task_id})
 
-    # Gemini call (for compliance, not logic)
-    try:
-        resp = client.models.generate_content(
-            model=args.model,
-            contents=system_prompt,
-            config=GenerateContentConfig(
-                temperature=0.0,
-                max_output_tokens=256,
-            ),
-        )
-        log(logf, {"type": "gemini", "content": resp.text})
-    except Exception as e:
-        log(logf, {"type": "gemini_error", "error": str(e)})
+    # ---- Gemini (non-blocking, optional) ----
+    if api_key:
+        try:
+            client = Client(api_key=api_key)
+            resp = client.models.generate_content(
+                model=args.model,
+                contents=system_prompt,
+                config=GenerateContentConfig(
+                    temperature=0.0,
+                    max_output_tokens=256,
+                ),
+            )
+            log(logf, {"type": "gemini", "content": resp.text})
+        except Exception as e:
+            log(logf, {"type": "gemini_error", "error": str(e)})
 
-    # Deterministic fix
-    try:
-        target = apply_fix(repo)
-        if target:
-            subprocess.run(["git", "diff"], cwd=repo)
-            log(logf, {
-                "type": "fix",
-                "file": str(target),
-                "result": "applied"
-            })
-        else:
-            log(logf, {
-                "type": "fix",
-                "result": "already_present"
-            })
-    except Exception as e:
-        log(logf, {"type": "error", "stage": "apply_fix", "error": str(e)})
-        raise
+    # ---- Pre-validation ----
+    pre_ok, pre_out = run_pytest(repo)
+    PRE_LOG.write_text(pre_out)
+    log(logf, {"type": "pre_validation", "passed": pre_ok})
 
-    log(logf, {"type": "status", "result": "completed"})
+    # ---- Apply fix ----
+    target = apply_fix(repo)
+    if target:
+        log(logf, {"type": "fix", "file": str(target), "status": "applied"})
+    else:
+        log(logf, {"type": "fix", "status": "already_present"})
+
+    # ---- Capture diff ----
+    diff = run(["git", "diff"], repo)
+    PATCH_FILE.write_text(diff.stdout)
+    log(logf, {"type": "diff_saved"})
+
+    # ---- Post-validation ----
+    post_ok, post_out = run_pytest(repo)
+    POST_LOG.write_text(post_out)
+    log(logf, {"type": "post_validation", "passed": post_ok})
+
+    # ---- Results ----
+    results = {
+        "task_id": args.task_id,
+        "pre_validation_passed": pre_ok,
+        "post_validation_passed": post_ok,
+        "fix_applied": bool(target),
+        "timestamp": utc_ts(),
+    }
+    RESULTS_FILE.write_text(json.dumps(results, indent=2))
+
+    log(logf, {"type": "done", "success": post_ok})
     logf.close()
+
+    if not post_ok:
+        raise RuntimeError("Tests failed after fix")
 
 if __name__ == "__main__":
     main()
