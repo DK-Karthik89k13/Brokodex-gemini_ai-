@@ -65,6 +65,10 @@ jobs:
         run: |
           pip install --upgrade google-generativeai
 
+      - name: Install Gemini SDK(google-genai)
+        run: |
+          pip install --upgrade google-genai
+
       - name: Run Gemini agent
         run: |
           python scripts/run_agent.py \
