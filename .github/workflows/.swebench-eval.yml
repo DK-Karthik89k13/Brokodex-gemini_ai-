@@ -12,7 +12,6 @@ jobs:
   evaluate:
     runs-on: ubuntu-latest
     container:
-      # Pulls the Docker image directly from GitHub Container Registry
       image: manojva/openlibrary-python312:latest
       options: --user root
 
@@ -30,34 +29,23 @@ jobs:
         run: |
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
-      - name: Install Python dependencies
-        shell: bash
-        run: |
-          cd /testbed
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt || true  # If requirements.txt exists
-          pip install web.py pytest Cython setuptools wheel
-     
-      - name: Test Python dependencies
-        shell: bash
-        run: |
-          python -c "import web; import pytest; print('Modules OK')"
-
 
       - name: Setup OpenLibrary repository
         shell: bash
         run: |
           set -e
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
-
           git clone https://github.com/internetarchive/openlibrary.git /testbed || true
           cd /testbed
           git fetch --all
           git checkout "$COMMIT_HASH"
 
-          apt-get update && apt-get install -y libpq-dev build-essential
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          cd /testbed
           python -m pip install --upgrade pip
-          pip install Cython setuptools wheel
+          pip install web.py pytest Cython setuptools wheel google-genai google-generativeai
 
       - name: Pre-verification test (expected to fail)
         shell: bash
@@ -75,45 +63,28 @@ jobs:
         run: |
           [ "$(cat /workspace/artifacts/pre_verification.exit)" -ne 0 ] || exit 1
 
-      - name: Install Gemini SDKs
-        run: |
-          pip install --upgrade google-generativeai
-          pip install --upgrade google-genai
-
-      - name: Debug Gemini install
-        run: |
-          python - << 'EOF'
-          from google import genai
-          from google.genai import types
-          print("google-genai OK")
-          EOF
-
       - name: Run Gemini agent
         shell: bash
         run: |
-         python scripts/run_agent.py \
-          --task-id "$TASK_ID" \
-          --repo-path /testbed \
-          --log-path /workspace/artifacts/agent.log \
-          --prompt-log /workspace/artifacts/prompts.md \
-          --pre-log /workspace/artifacts/pre_verification.log \
-          --post-log /workspace/artifacts/post_verification.log \
-          --results /workspace/artifacts/results.json \
-          --model "$GEMINI_MODEL"
-
-        env:
-          TASK_ID: ${{ github.event.inputs.task_id }}
-          PYTHONPATH: /testbed
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-1.5-pro
+          python scripts/run_agent.py \
+            --task-id "$TASK_ID" \
+            --repo-path /testbed \
+            --log-path /workspace/artifacts/agent.log \
+            --prompt-log /workspace/artifacts/prompts.md \
+            --pre-log /workspace/artifacts/pre_verification.log \
+            --post-log /workspace/artifacts/post_verification.log \
+            --results /workspace/artifacts/results.json \
+            --model "$GEMINI_MODEL"
 
       - name: Capture code changes
         if: always()
+        shell: bash
         run: |
           cd /testbed
           git diff > /workspace/artifacts/changes.patch || true
 
       - name: Post-verification test
+        shell: bash
         run: |
           cd /testbed
           python -m pytest \
