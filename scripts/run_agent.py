@@ -5,11 +5,12 @@ import time
 import argparse
 from pathlib import Path
 
-from google import genai
-from google.genai import types
-from google.genai.errors import ClientError
+import vertexai
+from vertexai.preview.generative_models import GenerativeModel
+from google.api_core.exceptions import ResourceExhausted, GoogleAPIError
 
 
+# ---------------- utils ----------------
 def fatal(msg: str):
     print(f"\n❌ {msg}", file=sys.stderr)
     sys.exit(1)
@@ -24,16 +25,21 @@ def parse_args():
     return p.parse_args()
 
 
-def load_api_key():
-    key = os.environ.get("GEMINI_API_KEY")
-    if not key:
-        fatal("GEMINI_API_KEY not set")
-    return key
+# ---------------- auth ----------------
+def init_vertex():
+    project = os.environ.get("GCP_PROJECT")
+    region = os.environ.get("GCP_REGION", "us-central1")
+
+    if not project:
+        fatal("GCP_PROJECT env var not set")
+
+    vertexai.init(project=project, location=region)
 
 
+# ---------------- prompt ----------------
 def build_prompt(task_id: str, repo_path: str) -> str:
     return f"""
-You are an autonomous software engineering agent.
+You are an autonomous senior Python engineer.
 
 Task ID:
 {task_id}
@@ -41,61 +47,63 @@ Task ID:
 Repository path:
 {repo_path}
 
-Goal:
-Identify the failing test, reason about the bug, and propose a patch.
-Respond ONLY with analysis and a git diff if applicable.
+RULES:
+- Identify why the test is failing
+- Propose a FIX
+- Output ONLY a unified git diff
+- No explanations, no markdown, no extra text
+
+Target test:
+openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending
 """
 
 
+# ---------------- main ----------------
 def main():
     args = parse_args()
-    api_key = load_api_key()
 
     repo_path = Path(args.repo_path)
     if not repo_path.exists():
         fatal(f"Repo path does not exist: {repo_path}")
 
-    client = genai.Client(api_key=api_key)
+    init_vertex()
+
+    model = GenerativeModel("gemma-3-27b-it")
 
     prompt = build_prompt(args.task_id, args.repo_path)
-
     Path(args.prompt_log).write_text(prompt)
 
     log_file = open(args.log_path, "w", buffering=1)
 
-    max_retries = 5
-    backoff = 10
+    max_iters = 5
+    backoff = 20
 
-    for iteration in range(1, max_retries + 1):
-        print(f"\n--- Iteration {iteration} ---", file=log_file)
+    for i in range(1, max_iters + 1):
+        print(f"\n--- Iteration {i} ---", file=log_file)
 
         try:
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.2,
-                    max_output_tokens=2048,
-                ),
+            response = model.generate_content(
+                prompt,
+                generation_config={
+                    "temperature": 0.2,
+                    "max_output_tokens": 2048,
+                },
             )
 
             text = response.text or ""
             print(text, file=log_file)
 
             if "diff --git" in text:
-                print("Fix successful", file=log_file)
+                print("\nFix successful", file=log_file)
                 break
 
-        except ClientError as e:
-            if e.status_code == 429:
-                wait = backoff * iteration
-                print(
-                    f"⚠️ Rate limited (429). Sleeping {wait}s...",
-                    file=log_file,
-                )
-                time.sleep(wait)
-                continue
-            raise
+        except ResourceExhausted:
+            wait = backoff * i
+            print(f"⚠️ Rate limited. Sleeping {wait}s...", file=log_file)
+            time.sleep(wait)
+
+        except GoogleAPIError as e:
+            fatal(f"Vertex AI error: {e}")
 
     log_file.close()
 
