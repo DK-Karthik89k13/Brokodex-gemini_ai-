@@ -1,69 +1,116 @@
-# Brokodex-gemini_ai-
+# SWE-bench Pro Evaluation (Gemini)
 
-# File Structure :
-SWE-bench-Pro-Evaluation/
-│
-├── .github/
-│   └── workflows/
-│       └── swebench-gemini.yml        # Your GitHub Actions workflow
-│
-├── scripts/
-│   ├── run_agent.py                   # Main script to run the Gemini agent
-│   └── tools.py
-|
-└──artifacts/                         # Created at runtime to store outputs
-    ├── pre_validation.log
-    ├── post_validation.log
-    ├── prompts.md
-    ├── results.json
-    └── changes.patch
-    
+## Project Overview
+SWE-bench Pro Evaluation is an automated framework for assessing and correcting issues in the OpenLibrary repository using the Gemini AI agent. The system runs pre-validation tests, attempts to auto-fix broken modules, runs post-validation tests, and captures all results, logs, and code changes for review.
 
-## Workflow
+This workflow is designed to:
+- Validate the OpenLibrary codebase for Python import issues and test failures.
+- Automatically reinstall missing modules.
+- Track all changes, logs, and prompts.
+- Generate HTML and JSON reports summarizing the evaluation.
+
+---
+
+## Repository Structure
+
+
+
+
+
+---
+
+## Workflow Overview
 
 1. **Workflow Trigger**  
-   Triggered manually via GitHub Actions (`workflow_dispatch`) with a `task_id` input.
+   The evaluation is triggered manually via GitHub Actions with a `task_id` input, which determines the commit to test in OpenLibrary.
 
 2. **Environment Setup**  
-   - Ubuntu container with Python 3.12
-   - Installs system dependencies (`build-essential`, `libpq-dev`)
-   - Installs Python dependencies (`pytest`, `web.py`, `Cython`, `google-generativeai`, etc.)
+   - Runs in an Ubuntu container with Python 3.12.
+   - Installs system dependencies like `build-essential` and `libpq-dev`.
+   - Installs Python dependencies: `pytest`, `web.py`, `Cython`, `google-generativeai`, `google-genai`, and more.
 
 3. **Repository Preparation**  
-   - Clones OpenLibrary into `/testbed`
-   - Checks out commit extracted from `task_id`
+   - Clones the OpenLibrary repository into `/testbed`.
+   - Checks out the commit specified in `task_id`.
 
-4. **Infogami Setup**  
-   - Clones Infogami if not present
-   - Installs in editable mode
-   - Sanity check import
+4. **Infogami Setup (Optional)**  
+   - Clones Infogami if not already present.
+   - Installs in editable mode and verifies import.
 
 5. **Run Gemini Agent**  
-   - Executes `scripts/run_agent.py` with:
-     - `--repo-path /testbed`
-     - Logs: pre/post validation, prompts, results
-     - Optional task file if provided
+   - Executes `scripts/run_agent.py` to:
+     - Run pre-validation tests.
+     - Auto-reinstall broken modules if necessary.
+     - Run post-validation tests.
+     - Capture logs, prompts, and results.
 
 6. **Post-Processing**  
-   - Captures code changes as `changes.patch`
-   - Uploads all artifacts to GitHub for review
+   - Generates `changes.patch` to capture any modifications applied.
+   - Produces an HTML report summarizing test results.
+   - Uploads all artifacts for review in GitHub Actions.
 
-## Artifacts
+---
 
-- `pre_validation.log` → Initial repo validation logs
-- `post_validation.log` → Validation after agent execution
-- `prompts.md` → Prompts used for Gemini agent
-- `results.json` → Task evaluation results
-- `changes.patch` → Git diff after agent modifications
+## Artifacts Description
+
+| File | Description |
+|------|-------------|
+| `pre_validation.log` | Logs from pre-validation tests before agent execution |
+| `post_validation.log` | Logs from post-validation tests after agent execution |
+| `prompts.md` | Record of prompts sent to Gemini AI agent |
+| `results.json` | Structured evaluation results including errors, tests passing, and changes applied |
+| `changes.patch` | Git diff of code changes applied by the agent |
+| `swebench_result.html` | HTML report summarizing pre/post validation, warnings, errors, and resolution status |
+
+---
+
+## Test and Validation
+
+- **Test Command:** `python -m pytest openlibrary/tests/core/test_imports.py -vv`
+- **Validation Features:**
+  - Detects `ModuleNotFoundError` and attempts auto-reinstall.
+  - Retries test execution up to 3 times for broken modules.
+  - Counts errors, passed tests, and warnings.
+  - Records which modules were reinstalled.
+
+---
+
+## HTML Report
+
+The HTML report provides:
+
+- Pre-validation and post-validation results.
+- Duration of the test run.
+- Resolution status (whether errors were corrected).
+- Summary of warnings and modules reinstalled.
+- Snippet of changes if code was modified.
+
+---
 
 ## Usage
 
-1. Set up `GEMINI_API_KEY` as a secret in your GitHub repository.
-2. Trigger the workflow manually and provide a `task_id`.
-3. Review uploaded artifacts after completion.
+1. Set `GEMINI_API_KEY` as a secret in your GitHub repository.
+2. Trigger the workflow manually via GitHub Actions.
+3. Provide a `task_id` corresponding to the OpenLibrary commit to evaluate.
+4. Download and review artifacts after the run to inspect logs, results, and any code changes.
+
+---
 
 ## Notes
 
-- The workflow is containerized to ensure consistent environment.
-- Python dependencies are installed inside `/testbed` to isolate the repo.
-- Idempotent installation ensures Infogami can be reused without repeated cloning.
+- The workflow is containerized for consistent and reproducible environments.
+- All Python dependencies are installed within the `/testbed` directory to avoid polluting global packages.
+- HTML and JSON reports are generated for both human-friendly and programmatic consumption.
+- `changes.patch` ensures full traceability of any automated modifications.
+
+---
+
+## Example JSON Output (`results.json`)
+
+```json
+{
+  "pre_errors": 5,
+  "post_errors": 0,
+  "tests_passing": true,
+  "change_applied": true
+}
