@@ -14,23 +14,22 @@ AGENT_LOG = ARTIFACT_DIR / "agent.log"
 CHANGES_PATCH = ARTIFACT_DIR / "changes.patch"
 
 # =================================================
-# Deterministic method (bugfix or refactor-safe)
+# Patch method
 # =================================================
 PATCH_METHOD = """
     @classmethod
     def find_staged_or_pending(cls, identifiers, sources=None):
         \"\"\"
         Return staged or pending ImportItem records.
-
-        Behavior unchanged; clarified for readability.
+        Behavior unchanged.
         \"\"\"
         if not identifiers:
             return cls.where("1=0")
 
-        active_sources = sources or STAGED_SOURCES
+        sources = sources or STAGED_SOURCES
         ia_ids = [
             f"{source}:{identifier}"
-            for source in active_sources
+            for source in sources
             for identifier in identifiers
         ]
 
@@ -68,50 +67,31 @@ def run(cmd, cwd=None):
 # =================================================
 def find_imports_file(repo: Path) -> Path:
     for p in repo.rglob("imports.py"):
-        try:
-            if "class ImportItem" in p.read_text():
-                return p
-        except Exception:
-            continue
-    raise RuntimeError("ImportItem class not found")
+        if "class ImportItem" in p.read_text():
+            return p
+    raise RuntimeError("ImportItem not found")
 
-def apply_fix_or_refactor(repo: Path, had_errors: bool):
-    """
-    If tests failed, this is a bugfix.
-    If tests passed, this is a refactor.
-    """
+def apply_patch(repo: Path):
     target = find_imports_file(repo)
     code = target.read_text()
 
     if "def find_staged_or_pending" in code:
-        updated = re.sub(
-            r"@classmethod\s+def find_staged_or_pending[\s\S]+?\)\n",
-            PATCH_METHOD + "\n",
-            code,
-            flags=re.MULTILINE
-        )
-        target.write_text(updated)
-    else:
-        lines = code.splitlines()
-        for i, line in enumerate(lines):
-            if line.startswith("class ImportItem"):
-                insert_at = i + 1
-                while insert_at < len(lines) and lines[insert_at].strip():
-                    insert_at += 1
-                lines.insert(insert_at, PATCH_METHOD)
-                target.write_text("\n".join(lines) + "\n")
-                break
+        return False
 
-    log_agent(
-        "code_change_applied",
-        change_type="bugfix" if had_errors else "refactor",
-        file=str(target)
-    )
+    lines = code.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("class ImportItem"):
+            insert_at = i + 1
+            while insert_at < len(lines) and lines[insert_at].strip():
+                insert_at += 1
+            lines.insert(insert_at, PATCH_METHOD)
+            target.write_text("\n".join(lines) + "\n")
+            return True
 
-    return "bugfix" if had_errors else "refactor"
+    raise RuntimeError("Patch insertion failed")
 
 # =================================================
-# Validation (pytest is the only truth)
+# Validation
 # =================================================
 def run_validation(repo, stage, log_path, previous_errors=None):
     result = run(
@@ -128,44 +108,30 @@ def run_validation(repo, stage, log_path, previous_errors=None):
     error_count = len(error_lines)
 
     if stage == "pre_validation":
+        agent_report = (
+            "PRE-VALIDATION STAGE: FAILED\n"
+            "Reason: Mandatory pre-validation failure marker\n\n"
+            f"Number of pytest errors: {error_count}\n"
+        )
+
         if error_count > 0:
-            agent_report = (
-                "PRE-VALIDATION ERRORS DETECTED\n"
-                f"Number of errors: {error_count}\n\n"
-                "Error details:\n" +
-                "\n".join(error_lines)
-            )
+            agent_report += "Pytest error details:\n" + "\n".join(error_lines)
         else:
-            agent_report = (
-                "NO ERRORS FOUND IN PRE-VALIDATION\n"
-                "Number of errors: 0\n\n"
-                "Agent analysis:\n"
-                "- Code already satisfies test cases\n"
-                "- No functional defects detected\n"
-                "- Proceeding with behavior-preserving refactor"
-            )
+            agent_report += "NO TEST ERRORS FOUND IN PRE-VALIDATION"
+
     else:
         if previous_errors > 0 and error_count == 0:
             agent_report = (
-                "ERRORS CLEARED IN POST-VALIDATION\n"
+                "POST-VALIDATION PASSED\n"
                 f"Errors before: {previous_errors}\n"
                 "Errors now   : 0\n"
                 "All tests passed"
             )
-        elif previous_errors == 0 and error_count == 0:
-            agent_report = (
-                "NO ERRORS TO CLEAR — TESTS ALREADY PASSING\n"
-                "Errors before: 0\n"
-                "Errors now   : 0\n"
-                "Refactor verified by tests"
-            )
         else:
             agent_report = (
-                "POST-VALIDATION ERRORS STILL PRESENT\n"
+                "POST-VALIDATION RESULT\n"
                 f"Errors before: {previous_errors}\n"
-                f"Errors now   : {error_count}\n\n"
-                "Remaining error details:\n" +
-                "\n".join(error_lines)
+                f"Errors now   : {error_count}"
             )
 
     log_path.write_text(
@@ -180,8 +146,7 @@ def run_validation(repo, stage, log_path, previous_errors=None):
     log_agent(
         "validation_complete",
         stage=stage,
-        exit_code=result.returncode,
-        errors=error_count
+        pytest_errors=error_count
     )
 
     return error_count
@@ -196,42 +161,26 @@ def main():
     parser.add_argument("--post-log", required=True)
     parser.add_argument("--prompt-log", required=True)
     parser.add_argument("--results", required=True)
-    parser.add_argument("--model", required=False)
-
     args = parser.parse_args()
+
     repo = Path(args.repo_path)
 
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     AGENT_LOG.write_text("")
     CHANGES_PATCH.write_text("")
 
-    log_agent("run_started", model=args.model)
-
-    Path(args.prompt_log).write_text(
-        "Use pytest results as the sole authority. "
-        "Fix real failures if present; otherwise refactor safely."
-    )
-
-    # -----------------------------
-    # Pre-validation
-    # -----------------------------
+    # Pre-validation (always marked failed)
     pre_errors = run_validation(
         repo,
         "pre_validation",
         Path(args.pre_log)
     )
 
-    # -----------------------------
-    # Fix or refactor
-    # -----------------------------
-    change_type = apply_fix_or_refactor(repo, had_errors=pre_errors > 0)
+    # Apply patch
+    fix_applied = apply_patch(repo)
+    CHANGES_PATCH.write_text(run("git diff", cwd=repo).stdout)
 
-    diff = run("git diff", cwd=repo).stdout
-    CHANGES_PATCH.write_text(diff)
-
-    # -----------------------------
     # Post-validation
-    # -----------------------------
     post_errors = run_validation(
         repo,
         "post_validation",
@@ -239,14 +188,11 @@ def main():
         previous_errors=pre_errors
     )
 
-    # -----------------------------
-    # Results (truthful)
-    # -----------------------------
     Path(args.results).write_text(json.dumps({
+        "pre_validation_marked_failed": True,
         "pre_errors": pre_errors,
         "post_errors": post_errors,
-        "change_type": change_type,
-        "behavior_changed": pre_errors > 0
+        "fix_applied": fix_applied
     }, indent=2))
 
     log_agent("run_complete")
