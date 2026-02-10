@@ -17,15 +17,15 @@ jobs:
 
     env:
       TASK_ID: ${{ github.event.inputs.task_id }}
-      PYTHONPATH: /testbed
+      PYTHONPATH: /testbed/openlibrary
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: gemini-1.5-pro
 
     steps:
       # ----------------------------
-      # Checkout harness repo
+      # Checkout workflow repository
       # ----------------------------
-      - name: Checkout repository
+      - name: Checkout harness repo
         uses: actions/checkout@v4
 
       # ----------------------------
@@ -34,25 +34,20 @@ jobs:
       - name: Prepare directories
         run: |
           mkdir -p /workspace/artifacts
-          mkdir -p /testbed/scripts
+          rm -rf /testbed
+          mkdir -p /testbed
 
       # ----------------------------
       # Clone OpenLibrary at commit
       # ----------------------------
-      - name: Setup OpenLibrary repository
+      - name: Clone OpenLibrary repository
+        shell: bash
         run: |
           set -e
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
-          git clone https://github.com/internetarchive/openlibrary.git /testbed
-          cd /testbed
+          git clone https://github.com/internetarchive/openlibrary.git /testbed/openlibrary
+          cd /testbed/openlibrary
           git checkout "$COMMIT_HASH"
-
-      # ----------------------------
-      # Copy run_agent.py into scripts/
-      # ----------------------------
-      - name: Copy run_agent.py
-        run: |
-          cp ./scripts/run_agent.py /testbed/scripts/run_agent.py
 
       # ----------------------------
       # Configure Git identity
@@ -65,7 +60,7 @@ jobs:
       # ----------------------------
       # Install system dependencies
       # ----------------------------
-      - name: Install system packages
+      - name: Install system dependencies
         run: |
           apt-get update
           apt-get install -y build-essential libpq-dev
@@ -76,12 +71,11 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir \
-            pytest pytest-asyncio pytest-rerunfailures \
-            web.py simplejson babel python-dateutil requests \
-            psycopg2-binary Cython setuptools wheel \
-            google-generativeai google-genai python-memcached \
-            validate_email lxml eventer pymemcache aiofiles luqum || true
+          pip install --upgrade --ignore-installed \
+            pytest pytest-asyncio web.py simplejson babel \
+            python-dateutil requests psycopg2-binary Cython setuptools wheel \
+            google-generativeai google-genai python-memcached validate_email \
+            lxml eventer pymemcache aiofiles luqum || true
 
       # ----------------------------
       # Install Infogami (idempotent)
@@ -98,18 +92,21 @@ jobs:
       # Pre-validation tests
       # ----------------------------
       - name: Pre-validation
+        shell: bash
         run: |
-          cd /testbed
+          cd /testbed/openlibrary
           pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/pre_validation.log
 
       # ----------------------------
-      # Run Gemini agent
+      # Run Gemini agent to patch code
       # ----------------------------
       - name: Run Gemini agent
+        shell: bash
         run: |
-          python /testbed/scripts/run_agent.py \
+          cd /testbed/openlibrary
+          python scripts/run_agent.py \
             --task-id "$TASK_ID" \
-            --repo-path /testbed \
+            --repo-path /testbed/openlibrary \
             --log-path /workspace/artifacts/agent.log \
             --prompt-log /workspace/artifacts/prompts.md \
             --pre-log /workspace/artifacts/pre_validation.log \
@@ -121,8 +118,9 @@ jobs:
       # Post-validation tests
       # ----------------------------
       - name: Post-validation
+        shell: bash
         run: |
-          cd /testbed
+          cd /testbed/openlibrary
           pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/post_validation.log
 
       # ----------------------------
@@ -131,7 +129,7 @@ jobs:
       - name: Capture code changes
         if: always()
         run: |
-          cd /testbed
+          cd /testbed/openlibrary
           git diff > /workspace/artifacts/changes.patch || true
 
       # ----------------------------
