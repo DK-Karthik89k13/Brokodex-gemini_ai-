@@ -7,25 +7,28 @@ import types
 import subprocess
 import argparse
 from pathlib import Path
-from datetime import datetime, UTC
-
-# ---------------------------
-# Auto-install missing packages
-# ---------------------------
+from datetime import datetime, timezone
 import importlib
 
+# ---------------------------
+# Auto-install real packages
+# ---------------------------
 def safe_import(module_name, package_name=None):
-    """Try to import, auto-install if missing."""
+    """Try to import a module; auto-install via pip if missing and installable."""
     if package_name is None:
         package_name = module_name
     try:
         return importlib.import_module(module_name)
     except ModuleNotFoundError:
         print(f"[agent] Missing module {module_name}, installing {package_name}...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-        return importlib.import_module(module_name)
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+            return importlib.import_module(module_name)
+        except Exception:
+            print(f"[agent] WARNING: Could not install {package_name}, skipping.")
+            return None
 
-# Wrap critical optional packages
+# Install only real packages
 requests = safe_import("requests")
 google_genai = safe_import("google.genai")
 Client = None
@@ -43,7 +46,7 @@ AGENT_LOG_PATH = "/tmp/agent.log"
 PROMPTS_MD_PATH = "/tmp/prompts.md"
 
 def utc_ts():
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 def log_event(payload):
     payload["timestamp"] = utc_ts()
@@ -90,7 +93,7 @@ def apply_fix(repo: Path):
     code = target.read_text()
 
     if "find_staged_or_pending" in code:
-        return None
+        return False
 
     lines = code.splitlines()
     class_idx = None
@@ -107,7 +110,7 @@ def apply_fix(repo: Path):
 
     lines.insert(insert_at, PATCH_METHOD)
     target.write_text("\n".join(lines) + "\n")
-    return target
+    return True
 
 # ---------------------------
 # Shell runner
@@ -119,7 +122,6 @@ def run_pytest(test_target, repo, log_path, stage):
     r = run(f"python -m pytest {test_target} -vv", cwd=repo)
     Path(log_path).write_text(r.stdout + "\n" + r.stderr)
     (Path(log_path).parent / f"{Path(log_path).stem}.exit").write_text(str(r.returncode))
-
     log_event({
         "stage": stage,
         "exit_code": r.returncode,
@@ -177,6 +179,7 @@ def main():
     # ---------------------------
     # Apply patch
     # ---------------------------
+    patched = False
     if "def find_staged_or_pending" not in content:
         insert_point = content.find("class ImportItem")
         if insert_point == -1:
@@ -187,7 +190,6 @@ def main():
         patched = True
     else:
         log_event({"type": "tool_result", "content": "Patch already present"})
-        patched = False
 
     # ---------------------------
     # Run pre/post pytest
