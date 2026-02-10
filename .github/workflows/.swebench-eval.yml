@@ -17,29 +17,19 @@ jobs:
 
     env:
       TASK_ID: ${{ github.event.inputs.task_id }}
-      PYTHONPATH: /testbed
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: gemini-1.5-pro
 
     steps:
-      # ----------------------------
-      # Checkout repo
-      # ----------------------------
-      - name: Checkout harness repo
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      # ----------------------------
-      # Prepare directories
-      # ----------------------------
       - name: Prepare directories
         run: |
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
 
-      # ----------------------------
-      # Clone OpenLibrary at commit
-      # ----------------------------
-      - name: Setup OpenLibrary repository
+      - name: Setup OpenLibrary repo
         shell: bash
         run: |
           set -e
@@ -48,64 +38,53 @@ jobs:
           cd /testbed
           git checkout "$COMMIT_HASH"
 
-      # ----------------------------
-      # Configure Git identity for commits
-      # ----------------------------
       - name: Configure Git identity
         run: |
           git config --global user.email "agent@example.com"
           git config --global user.name "SWE Agent"
 
-      # ----------------------------
-      # System dependencies
-      # ----------------------------
       - name: Install system dependencies
         run: |
           apt-get update
           apt-get install -y build-essential libpq-dev python3-venv git
 
-      # ----------------------------
-      # Setup virtual environment & Python deps
-      # ----------------------------
-      - name: Setup Python venv
+      - name: Create and activate virtual environment
         run: |
-          python -m venv /testbed/.venv
-          source /testbed/.venv/bin/activate
+          cd /testbed
+          python -m venv .venv
+          . .venv/bin/activate
           python -m pip install --upgrade pip
-          pip install \
+
+      - name: Install Python dependencies
+        run: |
+          cd /testbed
+          . .venv/bin/activate
+          pip install --no-cache-dir \
             pytest pytest-asyncio web.py simplejson babel python-dateutil requests \
             psycopg2-binary Cython setuptools wheel google-generativeai google-genai \
-            python-memcached validate_email lxml eventer pymemcache aiofiles luqum
+            python-memcached validate_email lxml eventer pymemcache aiofiles luqum || true
 
-      # ----------------------------
-      # Install infogami (idempotent)
-      # ----------------------------
       - name: Install infogami
         run: |
-          source /testbed/.venv/bin/activate
           cd /opt
           if [ ! -d infogami ]; then
             git clone https://github.com/internetarchive/infogami.git
           fi
+          . /testbed/.venv/bin/activate
           pip install -e infogami
 
-      # ----------------------------
-      # Pre-validation: test environment
-      # ----------------------------
       - name: Pre-validation
         shell: bash
         run: |
-          source /testbed/.venv/bin/activate
           cd /testbed
+          . .venv/bin/activate
           pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/pre_validation.log
 
-      # ----------------------------
-      # Run Gemini agent to evaluate & patch
-      # ----------------------------
       - name: Run Gemini agent
         shell: bash
         run: |
-          source /testbed/.venv/bin/activate
+          cd /testbed
+          . .venv/bin/activate
           python /testbed/scripts/run_agent.py \
             --task-id "$TASK_ID" \
             --repo-path /testbed \
@@ -116,28 +95,19 @@ jobs:
             --results /workspace/artifacts/results.json \
             --model "$GEMINI_MODEL"
 
-      # ----------------------------
-      # Post-validation after agent changes
-      # ----------------------------
       - name: Post-validation
         shell: bash
         run: |
-          source /testbed/.venv/bin/activate
           cd /testbed
+          . .venv/bin/activate
           pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/post_validation.log
 
-      # ----------------------------
-      # Capture code changes
-      # ----------------------------
       - name: Capture code changes
         if: always()
         run: |
           cd /testbed
           git diff > /workspace/artifacts/changes.patch || true
 
-      # ----------------------------
-      # Upload artifacts
-      # ----------------------------
       - name: Upload evaluation artifacts
         uses: actions/upload-artifact@v4
         with:
