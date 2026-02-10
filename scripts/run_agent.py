@@ -3,11 +3,12 @@ import os
 import sys
 import json
 import yaml
+import subprocess
 import argparse
 from pathlib import Path
 from datetime import datetime, timezone
-import subprocess
 import importlib
+import re
 
 # ----------------------------
 # Paths
@@ -41,7 +42,7 @@ def safe_import(module_name, package_name=None):
         return importlib.import_module(module_name)
 
 # ----------------------------
-# Gemini AI optional client
+# Optional Gemini AI client
 # ----------------------------
 Client = None
 GenerateContentConfig = None
@@ -56,15 +57,15 @@ except Exception:
 # Patch to apply
 # ----------------------------
 PATCH_METHOD = """
-@classmethod
-def find_staged_or_pending(cls, identifiers, sources=None):
-    if not identifiers:
-        return cls.where("1=0")
-    sources = sources or STAGED_SOURCES
-    ia_ids = [f"{source}:{identifier}" for source in sources for identifier in identifiers]
-    q = cls.where("ia_id IN $ia_ids", vars={"ia_ids": ia_ids})
-    q = q.where("status IN ('staged', 'pending')")
-    return q
+    @classmethod
+    def find_staged_or_pending(cls, identifiers, sources=None):
+        if not identifiers:
+            return cls.where("1=0")
+        sources = sources or STAGED_SOURCES
+        ia_ids = [f"{source}:{identifier}" for source in sources for identifier in identifiers]
+        q = cls.where("ia_id IN $ia_ids", vars={"ia_ids": ia_ids})
+        q = q.where("status IN ('staged', 'pending')")
+        return q
 """.rstrip()
 
 # ----------------------------
@@ -85,7 +86,11 @@ def apply_patch(repo: Path):
     if "find_staged_or_pending" in code:
         return None
     lines = code.splitlines()
-    class_idx = next((i for i, l in enumerate(lines) if l.startswith("class ImportItem")), None)
+    class_idx = None
+    for i, line in enumerate(lines):
+        if line.startswith("class ImportItem"):
+            class_idx = i
+            break
     if class_idx is None:
         raise RuntimeError("ImportItem class not found")
     insert_at = class_idx + 1
@@ -96,39 +101,32 @@ def apply_patch(repo: Path):
     return target
 
 # ----------------------------
-# Log analysis
-# ----------------------------
-def analyze_log(log_path):
-    log_path = Path(log_path)
-    if not log_path.exists():
-        return {"errors": 0, "lines": []}
-    errors = []
-    with log_path.open() as f:
-        for line in f:
-            if "ERROR" in line or "Traceback" in line:
-                errors.append(line.strip())
-    return {"errors": len(errors), "lines": errors}
-
-# ----------------------------
 # Pytest runner
 # ----------------------------
 def run_pytest(test_target, repo, log_path, stage):
-    result = run(f"python -m pytest {test_target} --maxfail=5 --disable-warnings -vv", cwd=repo)
+    result = run(f"python -m pytest {test_target} -vv", cwd=repo)
     Path(log_path).write_text(result.stdout + "\n" + result.stderr)
+
+    # Count errors in pre-validation
+    error_count = len(re.findall(r'ERROR', result.stdout + result.stderr))
+    warning_count = len(re.findall(r'WARNING', result.stdout + result.stderr))
+    
     log_event({
         "stage": stage,
         "exit_code": result.returncode,
+        "errors": error_count,
+        "warnings": warning_count,
         "stdout_tail": result.stdout[-4000:],
         "stderr_tail": result.stderr[-4000:]
     })
-    return result.returncode
+    return result.returncode, error_count, warning_count
 
 # ----------------------------
 # Main
 # ----------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task-file", required=True)
+    parser.add_argument("--task-file", required=False)
     parser.add_argument("--repo-path", required=True)
     parser.add_argument("--pre-log", required=True)
     parser.add_argument("--post-log", required=True)
@@ -140,25 +138,23 @@ def main():
     repo = Path(args.repo_path)
     open(AGENT_LOG_PATH, "w").close()
 
-    # Load task
-    with open(args.task_file, "r") as f:
-        task = yaml.safe_load(f)
-    target_file = Path(task["files_to_modify"][0])
-    content = target_file.read_text()
-
-    # Analyze pre-validation
-    pre_analysis = analyze_log(args.pre_log)
-    log_event({"type": "pre_validation_summary", "errors": pre_analysis["errors"]})
+    # Load task if provided
+    if args.task_file and Path(args.task_file).exists():
+        with open(args.task_file, "r") as f:
+            task = yaml.safe_load(f)
+        target_file = Path(task["files_to_modify"][0])
+        content = target_file.read_text()
+    else:
+        task = None
+        target_file = None
+        content = ""
 
     # System prompt
-    system_prompt = (
-        f"Apply SWE-bench deterministic patch for find_staged_or_pending. "
-        f"Pre-validation errors: {pre_analysis['errors']}"
-    )
+    system_prompt = "Apply SWE-bench deterministic patch for find_staged_or_pending."
     Path(args.prompt_log).write_text(system_prompt)
     log_event({"type": "request", "content": system_prompt})
 
-    # Optional Gemini call
+    # Gemini AI call
     if Client and args.model:
         try:
             client = Client(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -171,8 +167,9 @@ def main():
         except Exception as e:
             log_event({"type": "gemini_error", "content": str(e)})
 
-    # Apply patch
-    if "def find_staged_or_pending" not in content:
+    # Apply patch if task file exists
+    patched = False
+    if target_file and "def find_staged_or_pending" not in content:
         insert_point = content.find("class ImportItem")
         if insert_point == -1:
             raise RuntimeError("Could not locate insertion point.")
@@ -181,28 +178,28 @@ def main():
         log_event({"type": "tool_result", "content": "Patch applied successfully"})
         patched = True
     else:
-        log_event({"type": "tool_result", "content": "Patch already present"})
-        patched = False
+        log_event({"type": "tool_result", "content": "Patch already present or no task file"})
 
-    # Run post-validation
-    TEST_TARGET = "openlibrary/tests/core/test_imports.py"
-    post_exit = run_pytest(TEST_TARGET, repo, args.post_log, "post_validation")
+    # Pre-validation
+    pre_exit, pre_errors, pre_warnings = run_pytest("openlibrary/tests/core/test_imports.py", repo, args.pre_log, "pre_validation")
 
-    # Append pre-validation summary to post-validation log
+    # Post-validation
+    post_exit, post_errors, post_warnings = run_pytest("openlibrary/tests/core/test_imports.py", repo, args.post_log, "post_validation")
+
+    # Append error summary to post-validation log
+    summary = f"\n--- PRE-VALIDATION SUMMARY ---\nErrors: {pre_errors}\nWarnings: {pre_warnings}\n"
     with open(args.post_log, "a") as f:
-        f.write("\n\n# Pre-validation Summary\n")
-        f.write(f"Total errors found: {pre_analysis['errors']}\n")
-        for line in pre_analysis["lines"]:
-            f.write(line + "\n")
+        f.write(summary)
 
     # Save results
     Path(args.results).write_text(json.dumps({
-        "task_file": str(args.task_file),
-        "pre_errors": pre_analysis["errors"],
+        "task_file": str(args.task_file) if args.task_file else None,
+        "pre_exit": pre_exit,
         "post_exit": post_exit,
+        "pre_errors": pre_errors,
+        "pre_warnings": pre_warnings,
         "fix_applied": patched
     }, indent=2))
-
 
 if __name__ == "__main__":
     main()
