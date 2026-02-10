@@ -17,69 +17,56 @@ jobs:
 
     env:
       TASK_ID: ${{ github.event.inputs.task_id }}
-      PYTHONPATH: /testbed/openlibrary
+      PYTHONPATH: /testbed
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: gemini-1.5-pro
 
     steps:
-      # ----------------------------
-      # Checkout workflow repository
-      # ----------------------------
+      # Checkout repo
       - name: Checkout harness repo
         uses: actions/checkout@v4
 
-      # ----------------------------
-      # Prepare directories
-      # ----------------------------
       - name: Prepare directories
         run: |
           mkdir -p /workspace/artifacts
-          rm -rf /testbed
           mkdir -p /testbed
 
-      # ----------------------------
-      # Clone OpenLibrary at commit
-      # ----------------------------
-      - name: Clone OpenLibrary repository
+      # Clone OpenLibrary (idempotent)
+      - name: Setup OpenLibrary repository
         shell: bash
         run: |
-          set -e
+          cd /testbed
+          if [ ! -d openlibrary ]; then
+            git clone https://github.com/internetarchive/openlibrary.git
+          fi
+          cd openlibrary
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
-          git clone https://github.com/internetarchive/openlibrary.git /testbed/openlibrary
-          cd /testbed/openlibrary
+          git fetch --all
           git checkout "$COMMIT_HASH"
 
-      # ----------------------------
       # Configure Git identity
-      # ----------------------------
       - name: Configure Git identity
         run: |
           git config --global user.email "agent@example.com"
           git config --global user.name "SWE Agent"
 
-      # ----------------------------
-      # Install system dependencies
-      # ----------------------------
+      # System dependencies
       - name: Install system dependencies
         run: |
           apt-get update
           apt-get install -y build-essential libpq-dev
 
-      # ----------------------------
-      # Install Python dependencies
-      # ----------------------------
+      # Python dependencies (including missing ones)
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --upgrade --ignore-installed \
-            pytest pytest-asyncio web.py simplejson babel \
+          pip install --upgrade \
+            pytest pytest-asyncio pytest-rerunfailures web.py simplejson babel \
             python-dateutil requests psycopg2-binary Cython setuptools wheel \
             google-generativeai google-genai python-memcached validate_email \
-            lxml eventer pymemcache aiofiles luqum || true
+            lxml eventer pymemcache aiofiles luqum statsd pymarc
 
-      # ----------------------------
       # Install Infogami (idempotent)
-      # ----------------------------
       - name: Install Infogami
         run: |
           cd /opt
@@ -88,23 +75,18 @@ jobs:
           fi
           pip install -e infogami
 
-      # ----------------------------
-      # Pre-validation tests
-      # ----------------------------
+      # Pre-validation: test environment
       - name: Pre-validation
         shell: bash
         run: |
           cd /testbed/openlibrary
           pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/pre_validation.log
 
-      # ----------------------------
-      # Run Gemini agent to patch code
-      # ----------------------------
+      # Run Gemini agent
       - name: Run Gemini agent
         shell: bash
         run: |
-          cd /testbed/openlibrary
-          python scripts/run_agent.py \
+          python /testbed/scripts/run_agent.py \
             --task-id "$TASK_ID" \
             --repo-path /testbed/openlibrary \
             --log-path /workspace/artifacts/agent.log \
@@ -114,27 +96,21 @@ jobs:
             --results /workspace/artifacts/results.json \
             --model "$GEMINI_MODEL"
 
-      # ----------------------------
-      # Post-validation tests
-      # ----------------------------
+      # Post-validation after agent changes
       - name: Post-validation
         shell: bash
         run: |
           cd /testbed/openlibrary
           pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/post_validation.log
 
-      # ----------------------------
       # Capture code changes
-      # ----------------------------
       - name: Capture code changes
         if: always()
         run: |
           cd /testbed/openlibrary
           git diff > /workspace/artifacts/changes.patch || true
 
-      # ----------------------------
       # Upload artifacts
-      # ----------------------------
       - name: Upload evaluation artifacts
         uses: actions/upload-artifact@v4
         with:
