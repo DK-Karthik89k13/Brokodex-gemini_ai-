@@ -22,6 +22,9 @@ jobs:
       GEMINI_MODEL: gemini-1.5-pro
 
     steps:
+      # ----------------------------
+      # Checkout harness repo
+      # ----------------------------
       - name: Checkout harness repo
         uses: actions/checkout@v4
 
@@ -38,7 +41,6 @@ jobs:
         run: |
           set -e
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
-
           git clone https://github.com/internetarchive/openlibrary.git /testbed
           cd /testbed
           git checkout "$COMMIT_HASH"
@@ -50,10 +52,12 @@ jobs:
         shell: bash
         run: |
           apt-get update
-          apt-get install -y build-essential libpq-dev
+          apt-get install -y \
+            build-essential \
+            libpq-dev
 
       # ----------------------------
-      # Python dependencies
+      # Python runtime dependencies
       # ----------------------------
       - name: Install Python dependencies
         shell: bash
@@ -63,10 +67,14 @@ jobs:
           pip install \
             pytest \
             web.py \
+            simplejson \
+            babel \
+            python-dateutil \
+            requests \
+            psycopg2-binary \
             Cython \
             setuptools \
             wheel \
-            simplejson \
             google-generativeai \
             google-genai
 
@@ -83,18 +91,22 @@ jobs:
           pip install -e infogami
 
       # ----------------------------
-      # Sanity check infogami
+      # HARD FAIL if imports broken
       # ----------------------------
-      - name: Verify infogami import
+      - name: Sanity check OpenLibrary imports
+        shell: bash
         run: |
           python - << 'EOF'
+          import babel
+          import simplejson
+          import web
           import infogami
           from infogami.infobase.tests.pytest_wildcard import Wildcard
-          print("infogami import OK")
+          print("All critical imports OK")
           EOF
 
       # ----------------------------
-      # Run Gemini agent (FIXED)
+      # Run Gemini agent (single source of truth)
       # ----------------------------
       - name: Run Gemini agent
         shell: bash
