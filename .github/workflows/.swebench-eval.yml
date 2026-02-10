@@ -67,7 +67,8 @@ jobs:
           python-dateutil requests psycopg2-binary Cython setuptools wheel \
           google-generativeai google-genai python-memcached validate_email \
           lxml eventer pymemcache aiofiles luqum statsd pymarc \
-          internetarchive isbnlib
+          internetarchive isbnlib deprecated
+
 
 
       # Install Infogami (idempotent)
