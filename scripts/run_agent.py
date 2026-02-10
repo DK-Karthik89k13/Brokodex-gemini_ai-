@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import os
 import json
 import argparse
 import subprocess
@@ -15,7 +14,7 @@ AGENT_LOG = ARTIFACT_DIR / "agent.log"
 CHANGES_PATCH = ARTIFACT_DIR / "changes.patch"
 
 # -------------------------------------------------
-# Patch (deterministic SWE-bench)
+# SWE-bench patch
 # -------------------------------------------------
 PATCH_METHOD = """
     @classmethod
@@ -36,13 +35,12 @@ def utc_ts():
     return datetime.now(timezone.utc).isoformat()
 
 def log_agent(event, **data):
-    payload = {
-        "timestamp": utc_ts(),
-        "event": event,
-        **data,
-    }
     with open(AGENT_LOG, "a") as f:
-        f.write(json.dumps(payload) + "\n")
+        f.write(json.dumps({
+            "timestamp": utc_ts(),
+            "event": event,
+            **data
+        }) + "\n")
 
 def run(cmd, cwd=None):
     return subprocess.run(
@@ -50,7 +48,7 @@ def run(cmd, cwd=None):
         shell=True,
         cwd=cwd,
         text=True,
-        capture_output=True,
+        capture_output=True
     )
 
 # -------------------------------------------------
@@ -58,12 +56,9 @@ def run(cmd, cwd=None):
 # -------------------------------------------------
 def find_imports_file(repo: Path) -> Path:
     for p in repo.rglob("imports.py"):
-        try:
-            if "class ImportItem" in p.read_text():
-                return p
-        except Exception:
-            continue
-    raise RuntimeError("ImportItem class not found")
+        if "class ImportItem" in p.read_text():
+            return p
+    raise RuntimeError("ImportItem not found")
 
 def apply_patch(repo: Path):
     target = find_imports_file(repo)
@@ -79,50 +74,33 @@ def apply_patch(repo: Path):
             insert_at = i + 1
             while insert_at < len(lines) and lines[insert_at].strip():
                 insert_at += 1
-
             lines.insert(insert_at, PATCH_METHOD)
             target.write_text("\n".join(lines) + "\n")
-
             log_agent("patch_applied", file=str(target))
             return True
 
-    raise RuntimeError("Failed to apply patch")
+    raise RuntimeError("Patch insertion failed")
 
 # -------------------------------------------------
-# Validation logic (STRICT, pytest-derived)
+# Validation (REAL pytest results only)
 # -------------------------------------------------
-def run_validation(
-    repo: Path,
-    stage: str,
-    log_path: Path,
-    verification_log: Path,
-    previous_error_count: int | None = None,
-):
-    header = (
-        "==============================\n"
-        f"AGENT STAGE : {stage}\n"
-        f"TIMESTAMP  : {utc_ts()}\n"
-        "COMMAND    : python -m pytest openlibrary/tests/core/test_imports.py -vv\n"
-        "==============================\n\n"
-    )
-
+def run_validation(repo, stage, log_path, previous_errors=None):
     result = run(
         "python -m pytest openlibrary/tests/core/test_imports.py -vv",
-        cwd=repo,
+        cwd=repo
     )
 
     combined = result.stdout + "\n" + result.stderr
 
-    # STRICT error detection (no guessing)
     error_lines = [
-        line for line in combined.splitlines()
-        if "FAILED" in line or "ERROR" in line
+        l for l in combined.splitlines()
+        if "FAILED" in l or "ERROR" in l
     ]
     error_count = len(error_lines)
 
-    # -------------------------------------------------
-    # AGENT REPORT LOGIC
-    # -------------------------------------------------
+    # -----------------------------
+    # Agent interpretation
+    # -----------------------------
     if stage == "pre_validation":
         if error_count > 0:
             agent_report = (
@@ -138,14 +116,14 @@ def run_validation(
             )
 
     else:  # post_validation
-        if previous_error_count and previous_error_count > 0 and error_count == 0:
+        if previous_errors > 0 and error_count == 0:
             agent_report = (
                 "ERRORS CLEARED IN POST-VALIDATION\n"
-                f"Errors before: {previous_error_count}\n"
+                f"Errors before: {previous_errors}\n"
                 "Errors now   : 0\n"
                 "All tests passed"
             )
-        elif previous_error_count == 0 and error_count == 0:
+        elif previous_errors == 0 and error_count == 0:
             agent_report = (
                 "NO ERRORS TO CLEAR — TESTS ALREADY PASSING\n"
                 "Errors before: 0\n"
@@ -154,17 +132,13 @@ def run_validation(
         else:
             agent_report = (
                 "POST-VALIDATION ERRORS STILL PRESENT\n"
-                f"Errors before: {previous_error_count}\n"
+                f"Errors before: {previous_errors}\n"
                 f"Errors now   : {error_count}\n\n"
                 "Remaining error details:\n" +
                 "\n".join(error_lines)
             )
 
-    # -------------------------------------------------
-    # WRITE LOG FILES
-    # -------------------------------------------------
-    content = (
-        header +
+    log_path.write_text(
         result.stdout +
         "\n--- STDERR ---\n" +
         result.stderr +
@@ -173,93 +147,76 @@ def run_validation(
         "\n"
     )
 
-    log_path.write_text(content)
-    verification_log.write_text(content)
-
     log_agent(
         "validation_complete",
         stage=stage,
         exit_code=result.returncode,
-        errors=error_count,
+        errors=error_count
     )
 
-    return result.returncode, error_count
+    return error_count
 
 # -------------------------------------------------
 # Main
 # -------------------------------------------------
 def main():
     parser = argparse.ArgumentParser()
-
     parser.add_argument("--repo-path", required=True)
     parser.add_argument("--pre-log", required=True)
     parser.add_argument("--post-log", required=True)
     parser.add_argument("--prompt-log", required=True)
     parser.add_argument("--results", required=True)
-    parser.add_argument("--task-file", required=False)
-
-    # Workflow compatibility (ignored safely)
     parser.add_argument("--model", required=False)
 
     args = parser.parse_args()
-
     repo = Path(args.repo_path)
 
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     AGENT_LOG.write_text("")
     CHANGES_PATCH.write_text("")
 
-    log_agent("run_started", model=args.model)
+    log_agent("run_started")
 
-    # -------------------------------------------------
-    # Prompt
-    # -------------------------------------------------
-    prompt = "Apply SWE-bench deterministic patch for ImportItem.find_staged_or_pending."
-    Path(args.prompt_log).write_text(prompt)
-    log_agent("prompt_written")
-
-    # -------------------------------------------------
-    # Pre-validation
-    # -------------------------------------------------
-    pre_exit, pre_errors = run_validation(
-        repo=repo,
-        stage="pre_validation",
-        log_path=Path(args.pre_log),
-        verification_log=Path(args.pre_log).with_name("pre_verification.log"),
+    # Prompt (deterministic)
+    Path(args.prompt_log).write_text(
+        "Apply SWE-bench deterministic patch for ImportItem.find_staged_or_pending."
     )
 
-    # -------------------------------------------------
+    # -----------------------------
+    # Pre-validation
+    # -----------------------------
+    pre_errors = run_validation(
+        repo,
+        "pre_validation",
+        Path(args.pre_log)
+    )
+
+    # -----------------------------
     # Apply patch
-    # -------------------------------------------------
+    # -----------------------------
     fix_applied = apply_patch(repo)
 
     if fix_applied:
         diff = run("git diff", cwd=repo).stdout
         CHANGES_PATCH.write_text(diff)
-        log_agent("diff_captured", lines=len(diff.splitlines()))
-    else:
-        log_agent("diff_skipped", reason="no_change")
 
-    # -------------------------------------------------
+    # -----------------------------
     # Post-validation
-    # -------------------------------------------------
-    post_exit, post_errors = run_validation(
-        repo=repo,
-        stage="post_validation",
-        log_path=Path(args.post_log),
-        verification_log=Path(args.post_log).with_name("post_verification.log"),
-        previous_error_count=pre_errors,
+    # -----------------------------
+    post_errors = run_validation(
+        repo,
+        "post_validation",
+        Path(args.post_log),
+        previous_errors=pre_errors
     )
 
-    # -------------------------------------------------
-    # Results (derived ONLY from validation)
-    # -------------------------------------------------
+    # -----------------------------
+    # Results (truthful)
+    # -----------------------------
     Path(args.results).write_text(json.dumps({
-        "pre_exit": pre_exit,
-        "post_exit": post_exit,
         "pre_errors": pre_errors,
         "post_errors": post_errors,
-        "fix_applied": fix_applied,
+        "fix_applied": fix_applied
     }, indent=2))
 
     log_agent("run_complete")
