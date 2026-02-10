@@ -2,19 +2,45 @@
 import os
 import sys
 import json
-import argparse
+import yaml
 import subprocess
-import re
+import argparse
 from pathlib import Path
 from datetime import datetime, timezone
+import re
 
 # ----------------------------
-# Paths & constants
+# Constants
 # ----------------------------
-ARTIFACT_DIR = Path("/workspace/artifacts")
-AGENT_LOG = ARTIFACT_DIR / "agent.log"
-CHANGES_PATCH = ARTIFACT_DIR / "changes.patch"
+AGENT_LOG = "/workspace/artifacts/agent.log"
 
+# ----------------------------
+# Helpers
+# ----------------------------
+def utc_ts():
+    return datetime.now(timezone.utc).isoformat()
+
+def agent_log(event, **data):
+    payload = {
+        "timestamp": utc_ts(),
+        "event": event,
+        **data
+    }
+    with open(AGENT_LOG, "a") as f:
+        f.write(json.dumps(payload) + "\n")
+
+def run(cmd, cwd=None):
+    return subprocess.run(
+        cmd,
+        shell=True,
+        cwd=cwd,
+        text=True,
+        capture_output=True
+    )
+
+# ----------------------------
+# Patch (deterministic SWE-bench)
+# ----------------------------
 PATCH_METHOD = """
     @classmethod
     def find_staged_or_pending(cls, identifiers, sources=None):
@@ -28,43 +54,21 @@ PATCH_METHOD = """
 """.rstrip()
 
 # ----------------------------
-# Utilities
-# ----------------------------
-def utc_ts():
-    return datetime.now(timezone.utc).isoformat()
-
-def log_agent(event: dict):
-    event["timestamp"] = utc_ts()
-    with open(AGENT_LOG, "a") as f:
-        f.write(json.dumps(event) + "\n")
-
-def run(cmd, cwd=None):
-    return subprocess.run(
-        cmd,
-        shell=True,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-
-# ----------------------------
 # Repo helpers
 # ----------------------------
 def find_imports_file(repo: Path) -> Path:
     for p in repo.rglob("imports.py"):
-        try:
-            if "class ImportItem" in p.read_text():
-                return p
-        except Exception:
-            continue
-    raise RuntimeError("ImportItem class not found")
+        if "class ImportItem" in p.read_text():
+            return p
+    raise RuntimeError("ImportItem not found")
 
 def apply_patch(repo: Path):
     target = find_imports_file(repo)
     code = target.read_text()
 
     if "find_staged_or_pending" in code:
-        return False, None
+        agent_log("patch_skipped", reason="already_present")
+        return False
 
     lines = code.splitlines()
     for i, line in enumerate(lines):
@@ -72,55 +76,32 @@ def apply_patch(repo: Path):
             insert_at = i + 1
             while insert_at < len(lines) and lines[insert_at].strip():
                 insert_at += 1
-
             lines.insert(insert_at, PATCH_METHOD)
             target.write_text("\n".join(lines) + "\n")
-            return True, target
+            agent_log("patch_applied", file=str(target))
+            return True
 
     raise RuntimeError("Failed to apply patch")
 
 # ----------------------------
-# Pytest runner (agent-verbose)
+# Pytest runner
 # ----------------------------
-def run_pytest(repo: Path, log_path: Path, stage: str):
-    header = (
-        "==============================\n"
-        f"AGENT STAGE : {stage}\n"
-        f"TIMESTAMP  : {utc_ts()}\n"
-        "COMMAND    : python -m pytest openlibrary/tests/core/test_imports.py -vv\n"
-        "==============================\n\n"
+def run_validation(repo, test_path, log_path, stage):
+    result = run(f"python -m pytest {test_path} -vv", cwd=repo)
+
+    Path(log_path).write_text(
+        result.stdout + "\n\n" + result.stderr
     )
 
-    result = run(
-        "python -m pytest openlibrary/tests/core/test_imports.py -vv",
-        cwd=repo,
+    errors = len(re.findall(r"FAILED|ERROR", result.stdout + result.stderr))
+
+    agent_log(
+        f"{stage}_validation",
+        exit_code=result.returncode,
+        errors=errors
     )
 
-    combined = result.stdout + "\n" + result.stderr
-    errors = len(re.findall(r"\bERROR\b", combined))
-    warnings = len(re.findall(r"\bWARNING\b", combined))
-
-    with open(log_path, "w") as f:
-        f.write(header)
-        f.write(result.stdout)
-        f.write("\n--- STDERR ---\n")
-        f.write(result.stderr)
-        f.write(
-            "\n--- AGENT SUMMARY ---\n"
-            f"Exit code : {result.returncode}\n"
-            f"Errors    : {errors}\n"
-            f"Warnings  : {warnings}\n"
-        )
-
-    log_agent({
-        "type": "validation",
-        "stage": stage,
-        "exit_code": result.returncode,
-        "errors": errors,
-        "warnings": warnings,
-    })
-
-    return result.returncode, errors, warnings
+    return result.returncode, errors
 
 # ----------------------------
 # Main
@@ -132,86 +113,56 @@ def main():
     parser.add_argument("--post-log", required=True)
     parser.add_argument("--prompt-log", required=True)
     parser.add_argument("--results", required=True)
-
-    # Accepted for workflow compatibility; intentionally unused
-    parser.add_argument("--model", required=False)
-
+    parser.add_argument("--task-file", required=False)
     args = parser.parse_args()
 
     repo = Path(args.repo_path)
+    Path(AGENT_LOG).write_text("")  # reset
 
-    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    AGENT_LOG.write_text("")
-    CHANGES_PATCH.write_text("")
+    # Prompt log (deterministic agent)
+    system_prompt = "Apply SWE-bench deterministic patch for ImportItem.find_staged_or_pending"
+    Path(args.prompt_log).write_text(system_prompt)
+    agent_log("prompt_written")
 
-    # ----------------------------
-    # Prompt (deterministic)
-    # ----------------------------
-    prompt = "Apply SWE-bench deterministic patch for find_staged_or_pending."
-    Path(args.prompt_log).write_text(prompt)
-    log_agent({
-        "type": "prompt",
-        "content": prompt,
-        "model": args.model,  # logged only, not used
-    })
-
-    # ----------------------------
     # Pre-validation
-    # ----------------------------
-    pre_exit, pre_errors, pre_warnings = run_pytest(
-        repo, Path(args.pre_log), "pre_validation"
+    pre_exit, pre_errors = run_validation(
+        repo,
+        "openlibrary/tests/core/test_imports.py",
+        args.pre_log,
+        "pre"
     )
 
-    # ----------------------------
     # Apply patch
-    # ----------------------------
-    fix_applied, modified_file = apply_patch(repo)
+    patch_applied = apply_patch(repo)
 
-    if fix_applied:
-        log_agent({
-            "type": "code_change",
-            "file": str(modified_file),
-            "method_added": "ImportItem.find_staged_or_pending",
-        })
-
-        diff = run("git diff", cwd=repo).stdout
-        CHANGES_PATCH.write_text(diff)
-
-        log_agent({
-            "type": "diff_captured",
-            "lines": len(diff.splitlines()),
-        })
-    else:
-        log_agent({
-            "type": "code_change",
-            "status": "already_present",
-        })
-
-    # ----------------------------
     # Post-validation
-    # ----------------------------
-    post_exit, post_errors, post_warnings = run_pytest(
-        repo, Path(args.post_log), "post_validation"
+    post_exit, post_errors = run_validation(
+        repo,
+        "openlibrary/tests/core/test_imports.py",
+        args.post_log,
+        "post"
     )
 
-    with open(args.post_log, "a") as f:
-        f.write(
-            "\n--- PRE-VALIDATION SUMMARY ---\n"
-            f"Errors: {pre_errors}\n"
-            f"Warnings: {pre_warnings}\n"
-        )
+    # Capture diff ONLY if agent acted
+    diff_path = "/workspace/artifacts/changes.patch"
+    if patch_applied:
+        diff = run("git diff", cwd=repo).stdout
+        Path(diff_path).write_text(diff)
+        agent_log("diff_captured", lines=len(diff.splitlines()))
+    else:
+        Path(diff_path).write_text("")
+        agent_log("diff_empty")
 
-    # ----------------------------
-    # SWE-bench Pro result (VALIDATION-BASED)
-    # ----------------------------
+    # Results
     Path(args.results).write_text(json.dumps({
-        "task_file": None,
-        "pre_exit": int(pre_exit),
-        "post_exit": int(post_exit),
-        "pre_errors": int(pre_errors),
-        "pre_warnings": int(pre_warnings),
-        "fix_applied": bool(fix_applied),
+        "pre_exit": pre_exit,
+        "post_exit": post_exit,
+        "pre_errors": pre_errors,
+        "post_errors": post_errors,
+        "fix_applied": patch_applied
     }, indent=2))
+
+    agent_log("run_complete")
 
 if __name__ == "__main__":
     main()
