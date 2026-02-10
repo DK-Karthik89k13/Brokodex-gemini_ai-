@@ -3,6 +3,7 @@ import os
 import json
 import subprocess
 import argparse
+import re
 from pathlib import Path
 from datetime import datetime, UTC
 
@@ -41,6 +42,12 @@ def find_imports_file(repo: Path) -> Path:
             pass
     raise RuntimeError("imports.py containing ImportItem not found")
 
+# Regex to replace EXISTING method (critical)
+METHOD_RE = re.compile(
+    r"@classmethod\s+def find_staged_or_pending\([^)]*\):([\s\S]*?)(?=\n\s*@|\nclass|\Z)",
+    re.MULTILINE,
+)
+
 FIX_METHOD = """
     @classmethod
     def find_staged_or_pending(cls, ia_ids, sources=None):
@@ -57,38 +64,16 @@ def apply_fix(repo: Path):
     target = find_imports_file(repo)
     code = target.read_text()
 
-    if "def find_staged_or_pending" in code:
+    m = METHOD_RE.search(code)
+    if not m:
+        raise RuntimeError("find_staged_or_pending not found")
+
+    new_code = code[: m.start()] + FIX_METHOD + code[m.end() :]
+
+    if new_code == code:
         return None
 
-    lines = code.splitlines()
-    class_idx = None
-
-    for i, l in enumerate(lines):
-        if l.startswith("class ImportItem"):
-            class_idx = i
-            break
-
-    if class_idx is None:
-        raise RuntimeError("ImportItem class not found")
-
-    indent = None
-    insert_at = None
-
-    for i in range(class_idx + 1, len(lines)):
-        l = lines[i]
-        if not l.strip():
-            continue
-        if indent is None:
-            indent = len(l) - len(l.lstrip())
-        if not l.startswith(" " * indent):
-            insert_at = i
-            break
-
-    if insert_at is None:
-        insert_at = len(lines)
-
-    lines.insert(insert_at, FIX_METHOD)
-    target.write_text("\n".join(lines) + "\n")
+    target.write_text(new_code + "\n")
     return target
 
 # -------------------------
@@ -116,17 +101,22 @@ def main():
     args = ap.parse_args()
 
     repo = Path(args.repo_path)
-
     agent_log = open(args.log_path, "w", buffering=1)
 
     system_prompt = """You are an autonomous SWE-bench agent.
-Fix:
+Fix failing test:
 openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending
+Rules:
+- Prefer staged or pending local records
+- No remote lookups
 """
+
     Path(args.prompt_log).write_text(system_prompt)
     log(agent_log, {"type": "prompt", "content": system_prompt})
 
+    # -------------------------
     # Pre-verification
+    # -------------------------
     log(agent_log, {"stage": "pre_verification"})
     pre_exit = run_pytest(
         "openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending",
@@ -135,7 +125,9 @@ openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pend
     )
     log(agent_log, {"pre_exit": pre_exit})
 
-    # Gemini (logged only, not trusted)
+    # -------------------------
+    # Gemini (logged only)
+    # -------------------------
     try:
         client = Client(api_key=os.environ["GEMINI_API_KEY"])
         resp = client.models.generate_content(
@@ -147,12 +139,14 @@ openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pend
     except Exception as e:
         log(agent_log, {"gemini_error": str(e)})
 
+    # -------------------------
     # Apply deterministic fix
+    # -------------------------
     log(agent_log, {"stage": "apply_fix"})
     patched = apply_fix(repo)
 
-    changes_patch = Path(args.post_log).parent / "changes.patch"
     diff = run("git diff", cwd=repo)
+    changes_patch = Path(args.post_log).parent / "changes.patch"
     changes_patch.write_text(diff.stdout)
 
     log(agent_log, {
@@ -160,7 +154,9 @@ openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pend
         "file": str(patched) if patched else None
     })
 
+    # -------------------------
     # Post-verification
+    # -------------------------
     log(agent_log, {"stage": "post_verification"})
     post_exit = run_pytest(
         "openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending",
