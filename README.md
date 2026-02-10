@@ -14,7 +14,7 @@ This workflow is designed to:
 ## Repository Structure
 
 ## Repository Structure
-
+'''
 📁 SWE-bench-Pro-Evaluation
 ├── 📁 .github
 │   └── 📁 workflows
@@ -36,7 +36,7 @@ This workflow is designed to:
 ├── 📄 extract_metrics.py            – Script to extract metrics for reporting
 ├── 📄 setup_repository.sh           – Helper script to setup the repository
 ├── 📄 pyproject.toml                – Python project metadata and dependencies
-└── 📄 task.yaml                     – Task definitions for evaluation
+└── 📄 task.yaml                     – Task definitions for evaluation'''
 
 
 
