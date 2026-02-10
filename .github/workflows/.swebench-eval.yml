@@ -23,17 +23,15 @@ jobs:
 
     steps:
       # ----------------------------
-      # Checkout harness repo (contains run_agent.py)
+      # Checkout harness repo (default workspace)
       # ----------------------------
       - name: Checkout harness repo
         uses: actions/checkout@v4
-        with:
-          path: /workspace/harness
 
       # ----------------------------
-      # Checkout OpenLibrary repo
+      # Clone OpenLibrary at commit
       # ----------------------------
-      - name: Clone OpenLibrary at commit
+      - name: Setup OpenLibrary repository
         shell: bash
         run: |
           mkdir -p /testbed
@@ -43,13 +41,13 @@ jobs:
           git checkout "$COMMIT_HASH"
 
       # ----------------------------
-      # Prepare directories
+      # Prepare artifacts directory
       # ----------------------------
       - name: Prepare artifacts directory
         run: mkdir -p /workspace/artifacts
 
       # ----------------------------
-      # Configure git inside container
+      # Configure Git for CI
       # ----------------------------
       - name: Configure Git for CI
         shell: bash
@@ -120,12 +118,12 @@ jobs:
           EOF
 
       # ----------------------------
-      # Copy agent script into /testbed
+      # Copy Gemini agent script to /testbed
       # ----------------------------
       - name: Copy Gemini agent script
         shell: bash
         run: |
-          cp -r /workspace/harness/scripts /testbed/
+          cp -r $GITHUB_WORKSPACE/scripts /testbed/
 
       # ----------------------------
       # Run Gemini agent and log changes
@@ -134,7 +132,7 @@ jobs:
         shell: bash
         run: |
           cd /testbed
-          # Baseline commit for capturing changes
+          # Baseline commit for capturing agent changes
           git add -A
           git commit -m "pre-agent baseline" || true
 
