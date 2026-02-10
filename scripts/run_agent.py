@@ -52,7 +52,6 @@ FIX_METHOD = """
         return list(q)
 """.rstrip()
 
-
 def apply_fix(repo: Path):
     target = find_imports_file(repo)
     code = target.read_text()
@@ -92,12 +91,21 @@ def apply_fix(repo: Path):
     return target
 
 # -------------------------
-# Pytest
+# Pytest runner (CRITICAL FIX)
 # -------------------------
-def run_pytest(test, repo, log_path):
-    r = run(f"python -m pytest {test} -xvs", cwd=repo)
-    log_path.write_text(r.stdout + r.stderr)
+def run_pytest(test_target, repo, log_path, agent_log, stage):
+    r = run(f"python -m pytest {test_target} -vv", cwd=repo)
+
+    log_path.write_text(r.stdout + "\n" + r.stderr)
     (log_path.parent / f"{log_path.stem}.exit").write_text(str(r.returncode))
+
+    log(agent_log, {
+        "stage": stage,
+        "exit_code": r.returncode,
+        "stdout_tail": r.stdout[-4000:],
+        "stderr_tail": r.stderr[-4000:]
+    })
+
     return r.returncode
 
 # -------------------------
@@ -116,26 +124,38 @@ def main():
     args = ap.parse_args()
 
     repo = Path(args.repo_path)
-
     agent_log = open(args.log_path, "w", buffering=1)
 
-    system_prompt = """You are an autonomous SWE-bench agent.
-Fix:
-openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending
-"""
+    TEST_TARGET = "openlibrary/tests/core/test_imports.py"
+
+    system_prompt = (
+        "You are an autonomous SWE-bench agent.\n"
+        "Fix failing tests in openlibrary/tests/core/test_imports.py"
+    )
+
     Path(args.prompt_log).write_text(system_prompt)
     log(agent_log, {"type": "prompt", "content": system_prompt})
 
-    # Pre-verification
-    log(agent_log, {"stage": "pre_verification"})
+    # -------------------------
+    # PRE-VALIDATION
+    # -------------------------
+    log(agent_log, {"stage": "pre_validation_start"})
     pre_exit = run_pytest(
-        "openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending",
+        TEST_TARGET,
         repo,
         Path(args.pre_log),
+        agent_log,
+        "pre_validation",
     )
-    log(agent_log, {"pre_exit": pre_exit})
 
-    # Gemini (logged only, not trusted)
+    if pre_exit == 0:
+        log(agent_log, {
+            "warning": "Pre-validation unexpectedly passed. Tests may be mis-selected."
+        })
+
+    # -------------------------
+    # MODEL CALL (LOGGED ONLY)
+    # -------------------------
     try:
         client = Client(api_key=os.environ["GEMINI_API_KEY"])
         resp = client.models.generate_content(
@@ -147,37 +167,50 @@ openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pend
     except Exception as e:
         log(agent_log, {"gemini_error": str(e)})
 
-    # Apply deterministic fix
+    # -------------------------
+    # APPLY FIX
+    # -------------------------
     log(agent_log, {"stage": "apply_fix"})
     patched = apply_fix(repo)
 
-    changes_patch = Path(args.post_log).parent / "changes.patch"
     diff = run("git diff", cwd=repo)
-    changes_patch.write_text(diff.stdout)
+    changes_patch = Path(args.post_log).parent / "changes.patch"
+
+    if diff.stdout.strip():
+        changes_patch.write_text(diff.stdout)
+        changed = True
+    else:
+        changes_patch.write_text("")
+        changed = False
 
     log(agent_log, {
         "fix_applied": bool(patched),
+        "changes_detected": changed,
         "file": str(patched) if patched else None
     })
 
-    # Post-verification
-    log(agent_log, {"stage": "post_verification"})
+    # -------------------------
+    # POST-VALIDATION
+    # -------------------------
+    log(agent_log, {"stage": "post_validation_start"})
     post_exit = run_pytest(
-        "openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending",
+        TEST_TARGET,
         repo,
         Path(args.post_log),
+        agent_log,
+        "post_validation",
     )
-    log(agent_log, {"post_exit": post_exit})
 
     results = {
+        "task_id": args.task_id,
         "pre_exit": pre_exit,
         "post_exit": post_exit,
         "fix_applied": bool(patched),
+        "changes_detected": changed
     }
 
     Path(args.results).write_text(json.dumps(results, indent=2))
     agent_log.close()
-
 
 if __name__ == "__main__":
     main()
