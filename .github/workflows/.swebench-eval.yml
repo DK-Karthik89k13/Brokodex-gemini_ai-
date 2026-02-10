@@ -22,82 +22,52 @@ jobs:
       GEMINI_MODEL: gemini-1.5-pro
 
     steps:
-      # ----------------------------
-      # Checkout repo
-      # ----------------------------
-      - name: Checkout harness repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Prepare directories
-        run: |
-          mkdir -p /workspace/artifacts
-          mkdir -p /testbed
+        run: mkdir -p /workspace/artifacts /testbed
 
-      # ----------------------------
-      # Clone OpenLibrary at commit
-      # ----------------------------
-      - name: Setup OpenLibrary repository
+      - name: Clone OpenLibrary
         shell: bash
         run: |
-          set -e
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
           git clone https://github.com/internetarchive/openlibrary.git /testbed
           cd /testbed
           git checkout "$COMMIT_HASH"
 
-      # ----------------------------
-      # Configure Git identity
-      # ----------------------------
-      - name: Configure Git identity
+      - name: Configure Git
         run: |
           git config --global user.email "agent@example.com"
           git config --global user.name "SWE Agent"
 
-      # ----------------------------
-      # System dependencies
-      # ----------------------------
       - name: Install system dependencies
         run: |
-          apt-get update
-          apt-get install -y build-essential libpq-dev
+          apt-get update && apt-get install -y build-essential libpq-dev
 
-      # ----------------------------
-      # Python dependencies
-      # ----------------------------
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install \
-            pytest pytest-asyncio pytest-rerunfailures web.py simplejson babel \
-            python-dateutil requests psycopg2-binary Cython setuptools wheel \
-            google-generativeai google-genai python-memcached validate_email \
-            lxml eventer pymemcache aiofiles luqum || true
+          pip install --no-cache-dir \
+            pytest pytest-asyncio pytest-rerunfailures \
+            statsd pymarc \
+            web.py simplejson babel python-dateutil requests \
+            psycopg2-binary Cython setuptools wheel \
+            google-generativeai google-genai \
+            python-memcached validate_email lxml eventer \
+            pymemcache aiofiles luqum
 
-      # ----------------------------
-      # Install Infogami (idempotent)
-      # ----------------------------
-      - name: Install infogami
+      - name: Install Infogami
         run: |
           cd /opt
-          if [ ! -d infogami ]; then
-            git clone https://github.com/internetarchive/infogami.git
-          fi
+          if [ ! -d infogami ]; then git clone https://github.com/internetarchive/infogami.git; fi
           pip install -e infogami
 
-      # ----------------------------
-      # Pre-validation: test environment
-      # ----------------------------
       - name: Pre-validation
-        shell: bash
         run: |
           cd /testbed
           pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/pre_validation.log
 
-      # ----------------------------
-      # Run Gemini agent to evaluate & patch
-      # ----------------------------
       - name: Run Gemini agent
-        shell: bash
         run: |
           python /testbed/scripts/run_agent.py \
             --task-id "$TASK_ID" \
@@ -109,28 +79,16 @@ jobs:
             --results /workspace/artifacts/results.json \
             --model "$GEMINI_MODEL"
 
-      # ----------------------------
-      # Post-validation after agent changes
-      # ----------------------------
       - name: Post-validation
-        shell: bash
         run: |
           cd /testbed
           pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/post_validation.log
 
-      # ----------------------------
-      # Capture code changes
-      # ----------------------------
-      - name: Capture code changes
+      - name: Capture changes
         if: always()
-        run: |
-          cd /testbed
-          git diff > /workspace/artifacts/changes.patch || true
+        run: cd /testbed && git diff > /workspace/artifacts/changes.patch || true
 
-      # ----------------------------
-      # Upload artifacts
-      # ----------------------------
-      - name: Upload evaluation artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: swebench-eval-artifacts
