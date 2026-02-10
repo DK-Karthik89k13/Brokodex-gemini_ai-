@@ -56,15 +56,19 @@ jobs:
           apt-get update
           apt-get install -y build-essential libpq-dev
 
-      # Python dependencies (including missing ones)
+      # ----------------------------
+      # Python dependencies
+      # ----------------------------
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade \
-            pytest pytest-asyncio pytest-rerunfailures web.py simplejson babel \
-            python-dateutil requests psycopg2-binary Cython setuptools wheel \
-            google-generativeai google-genai python-memcached validate_email \
-            lxml eventer pymemcache aiofiles luqum statsd pymarc
+          pytest pytest-asyncio pytest-rerunfailures web.py simplejson babel \
+          python-dateutil requests psycopg2-binary Cython setuptools wheel \
+          google-generativeai google-genai python-memcached validate_email \
+          lxml eventer pymemcache aiofiles luqum statsd pymarc \
+          internetarchive isbnlib
+
 
       # Install Infogami (idempotent)
       - name: Install Infogami
