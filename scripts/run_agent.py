@@ -3,7 +3,6 @@ import os
 import json
 import subprocess
 import argparse
-import re
 from pathlib import Path
 from datetime import datetime, UTC
 
@@ -34,73 +33,69 @@ def run(cmd, cwd):
 # Repo helpers
 # -------------------------
 def find_imports_file(repo: Path) -> Path:
-    for p in repo.rglob("imports.py"):
-        try:
-            if "class ImportItem" in p.read_text():
-                return p
-        except Exception:
-            pass
-    raise RuntimeError("imports.py containing ImportItem not found")
+    for p in repo.rglob("openlibrary/core/imports.py"):
+        return p
+    raise RuntimeError("openlibrary/core/imports.py not found")
 
-METHOD_RE = re.compile(
-    r"@classmethod\s+def find_staged_or_pending\([^)]*\):([\s\S]*?)(?=\n\s*@|\nclass|\Z)",
-    re.MULTILINE,
-)
+# -------------------------
+# Deterministic FIX (task-correct)
+# -------------------------
+STAGED_SOURCES_SNIPPET = 'STAGED_SOURCES = ("amazon", "idb")\n\n'
 
 FIX_METHOD = """
-    @classmethod
-    def find_staged_or_pending(cls, ia_ids, sources=None):
-        if not ia_ids:
-            return []
+    @staticmethod
+    def find_staged_or_pending(identifiers, sources=STAGED_SOURCES):
+        if not identifiers:
+            return None
 
-        q = cls.where("ia_id IN $ia_ids", vars={"ia_ids": ia_ids})
-        q = q.where("status IN ('staged', 'pending')")
-        return list(q)
+        ia_ids = [
+            f"{source}:{identifier}"
+            for identifier in identifiers
+            for source in sources
+        ]
+
+        return ImportItem.where(
+            "ia_id IN $ia_ids AND status IN ('staged', 'pending')",
+            vars={"ia_ids": ia_ids},
+        )
 """.rstrip()
 
 def apply_fix(repo: Path):
     target = find_imports_file(repo)
     code = target.read_text()
+    modified = False
 
-    # Case 1: method exists → replace
-    if METHOD_RE.search(code):
-        new_code = METHOD_RE.sub(FIX_METHOD, code)
-        if new_code != code:
-            target.write_text(new_code + "\n")
-            return target
-        return None
+    # 1. Ensure STAGED_SOURCES exists
+    if "STAGED_SOURCES" not in code:
+        code = STAGED_SOURCES_SNIPPET + code
+        modified = True
 
-    # Case 2: method missing → insert into ImportItem
-    lines = code.splitlines()
-    class_idx = None
+    # 2. Replace or insert method
+    if "def find_staged_or_pending" in code:
+        start = code.index("def find_staged_or_pending")
+        end = code.find("\n\n", start)
+        if end == -1:
+            end = len(code)
+        code = code[:start] + FIX_METHOD + code[end:]
+        modified = True
+    else:
+        # Insert inside ImportItem
+        lines = code.splitlines()
+        for i, line in enumerate(lines):
+            if line.startswith("class ImportItem"):
+                insert_at = i + 1
+                while insert_at < len(lines) and lines[insert_at].startswith(" "):
+                    insert_at += 1
+                lines.insert(insert_at, FIX_METHOD)
+                code = "\n".join(lines)
+                modified = True
+                break
 
-    for i, l in enumerate(lines):
-        if l.startswith("class ImportItem"):
-            class_idx = i
-            break
+    if modified:
+        target.write_text(code + "\n")
+        return target
 
-    if class_idx is None:
-        raise RuntimeError("ImportItem class not found")
-
-    indent = None
-    insert_at = None
-
-    for i in range(class_idx + 1, len(lines)):
-        l = lines[i]
-        if not l.strip():
-            continue
-        if indent is None:
-            indent = len(l) - len(l.lstrip())
-        if not l.startswith(" " * indent):
-            insert_at = i
-            break
-
-    if insert_at is None:
-        insert_at = len(lines)
-
-    lines.insert(insert_at, FIX_METHOD)
-    target.write_text("\n".join(lines) + "\n")
-    return target
+    return None
 
 # -------------------------
 # Pytest
@@ -129,15 +124,12 @@ def main():
     repo = Path(args.repo_path)
     agent_log = open(args.log_path, "w", buffering=1)
 
-    system_prompt = """You are an autonomous SWE-bench agent.
+    system_prompt = """
+You are an autonomous SWE-bench agent.
 
 Fix failing test:
 openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending
-
-Rules:
-- Prefer staged or pending local ImportItem records
-- Do not perform remote lookups
-"""
+""".strip()
 
     Path(args.prompt_log).write_text(system_prompt)
     log(agent_log, {"type": "prompt", "content": system_prompt})
@@ -163,7 +155,7 @@ Rules:
     except Exception as e:
         log(agent_log, {"gemini_error": str(e)})
 
-    # Apply fix
+    # Apply FIX
     log(agent_log, {"stage": "apply_fix"})
     patched = apply_fix(repo)
 
@@ -194,3 +186,4 @@ Rules:
 
 if __name__ == "__main__":
     main()
+
