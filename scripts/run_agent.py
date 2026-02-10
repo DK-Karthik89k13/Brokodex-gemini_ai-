@@ -3,8 +3,10 @@ import os
 import json
 import subprocess
 import argparse
+import re
 from pathlib import Path
 from datetime import datetime, UTC
+
 
 from google.genai import Client
 from google.genai.types import GenerateContentConfig
@@ -52,43 +54,38 @@ FIX_METHOD = """
         return list(q)
 """.rstrip()
 
+import re
+
 def apply_fix(repo: Path):
     target = find_imports_file(repo)
     code = target.read_text()
 
-    if "def find_staged_or_pending" in code:
-        return None
+    method_re = re.compile(
+        r"""
+        @classmethod\s+
+        def\s+find_staged_or_pending\s*\(.*?\):   # method header
+        (?:\n[ \t]+.*)*                           # method body
+        """,
+        re.VERBOSE
+    )
 
+    if method_re.search(code):
+        # 🔥 REPLACE existing method
+        new_code = method_re.sub(FIX_METHOD + "\n", code)
+        target.write_text(new_code)
+        return target
+
+    # ---- method does NOT exist → insert ----
     lines = code.splitlines()
-    class_idx = None
+    for i, line in enumerate(lines):
+        if line.startswith("class ImportItem"):
+            insert_at = i + 1
+            lines.insert(insert_at, FIX_METHOD)
+            target.write_text("\n".join(lines) + "\n")
+            return target
 
-    for i, l in enumerate(lines):
-        if l.startswith("class ImportItem"):
-            class_idx = i
-            break
+    raise RuntimeError("ImportItem class not found")
 
-    if class_idx is None:
-        raise RuntimeError("ImportItem class not found")
-
-    indent = None
-    insert_at = None
-
-    for i in range(class_idx + 1, len(lines)):
-        l = lines[i]
-        if not l.strip():
-            continue
-        if indent is None:
-            indent = len(l) - len(l.lstrip())
-        if not l.startswith(" " * indent):
-            insert_at = i
-            break
-
-    if insert_at is None:
-        insert_at = len(lines)
-
-    lines.insert(insert_at, FIX_METHOD)
-    target.write_text("\n".join(lines) + "\n")
-    return target
 
 # -------------------------
 # Pytest runner (CRITICAL FIX)
