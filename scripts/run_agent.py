@@ -132,6 +132,10 @@ def main():
     parser.add_argument("--post-log", required=True)
     parser.add_argument("--prompt-log", required=True)
     parser.add_argument("--results", required=True)
+
+    # Accepted for workflow compatibility; intentionally unused
+    parser.add_argument("--model", required=False)
+
     args = parser.parse_args()
 
     repo = Path(args.repo_path)
@@ -145,7 +149,11 @@ def main():
     # ----------------------------
     prompt = "Apply SWE-bench deterministic patch for find_staged_or_pending."
     Path(args.prompt_log).write_text(prompt)
-    log_agent({"type": "prompt", "content": prompt})
+    log_agent({
+        "type": "prompt",
+        "content": prompt,
+        "model": args.model,  # logged only, not used
+    })
 
     # ----------------------------
     # Pre-validation
@@ -194,7 +202,7 @@ def main():
         )
 
     # ----------------------------
-    # SWE-bench result (VALIDATION-BASED ONLY)
+    # SWE-bench Pro result (VALIDATION-BASED)
     # ----------------------------
     Path(args.results).write_text(json.dumps({
         "task_file": None,
