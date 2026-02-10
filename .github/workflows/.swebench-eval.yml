@@ -23,10 +23,15 @@ jobs:
 
     steps:
       # ----------------------------
-      # Checkout harness repo
+      # Checkout repo
       # ----------------------------
       - name: Checkout harness repo
         uses: actions/checkout@v4
+
+      - name: Prepare directories
+        run: |
+          mkdir -p /workspace/artifacts
+          mkdir -p /testbed
 
       # ----------------------------
       # Clone OpenLibrary at commit
@@ -34,64 +39,45 @@ jobs:
       - name: Setup OpenLibrary repository
         shell: bash
         run: |
-          mkdir -p /testbed
+          set -e
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
           git clone https://github.com/internetarchive/openlibrary.git /testbed
           cd /testbed
           git checkout "$COMMIT_HASH"
 
       # ----------------------------
-      # Prepare artifacts directory
+      # Configure Git identity for commits
       # ----------------------------
-      - name: Prepare artifacts directory
-        run: mkdir -p /workspace/artifacts
-
-      # ----------------------------
-      # Configure Git for CI
-      # ----------------------------
-      - name: Configure Git for CI
-        shell: bash
+      - name: Configure Git identity
         run: |
-          git config --global user.email "ci@localhost"
-          git config --global user.name "CI Bot"
+          git config --global user.email "agent@example.com"
+          git config --global user.name "SWE Agent"
 
       # ----------------------------
       # System dependencies
       # ----------------------------
       - name: Install system dependencies
-        shell: bash
         run: |
           apt-get update
           apt-get install -y build-essential libpq-dev
 
       # ----------------------------
-      # Python dependencies
+      # Python runtime dependencies
       # ----------------------------
       - name: Install Python dependencies
-        shell: bash
         run: |
           cd /testbed
           python -m pip install --upgrade pip
           pip install \
-            pytest \
-            web.py \
-            simplejson \
-            babel \
-            python-dateutil \
-            requests \
-            psycopg2-binary \
-            Cython \
-            setuptools \
-            wheel \
-            google-generativeai \
-            google-genai \
-            python-memcached
+            pytest pytest-asyncio web.py simplejson babel python-dateutil requests \
+            psycopg2-binary Cython setuptools wheel google-generativeai google-genai \
+            python-memcached validate_email lxml eventer pymemcache aiofiles luqum \
+            paapi5_python_sdk
 
       # ----------------------------
-      # Install infogami
+      # Install infogami (idempotent)
       # ----------------------------
       - name: Install infogami
-        shell: bash
         run: |
           cd /opt
           if [ ! -d infogami ]; then
@@ -100,78 +86,50 @@ jobs:
           pip install -e infogami
 
       # ----------------------------
-      # Copy Gemini agent script to /testbed
+      # Pre-validation: test environment
       # ----------------------------
-      - name: Copy Gemini agent script
-        shell: bash
-        run: |
-          cp -r $GITHUB_WORKSPACE/scripts /testbed/
-
-      # ----------------------------
-      # Pre-validation: run tests and log failures
-      # ----------------------------
-      - name: Pre-validation checks
+      - name: Pre-validation
         shell: bash
         run: |
           cd /testbed
-          echo "=== Pre-validation test results ===" > /workspace/artifacts/pre_verification.log
-          # Run pytest and capture failures
-          pytest openlibrary/tests --maxfail=0 --disable-warnings --tb=short --color=no \
-            | tee -a /workspace/artifacts/pre_verification.log
-          echo "=== End of Pre-validation ===" >> /workspace/artifacts/pre_verification.log
+          pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/pre_validation.log
 
       # ----------------------------
-      # Baseline commit to track changes
-      # ----------------------------
-      - name: Baseline commit
-        shell: bash
-        run: |
-          cd /testbed
-          git add -A
-          git commit -m "pre-agent baseline" || true
-
-      # ----------------------------
-      # Run Gemini agent
+      # Run Gemini agent to evaluate & patch
       # ----------------------------
       - name: Run Gemini agent
         shell: bash
         run: |
-          cd /testbed
-          python scripts/run_agent.py \
+          python /testbed/scripts/run_agent.py \
             --task-id "$TASK_ID" \
             --repo-path /testbed \
             --log-path /workspace/artifacts/agent.log \
             --prompt-log /workspace/artifacts/prompts.md \
-            --pre-log /workspace/artifacts/pre_verification.log \
-            --post-log /workspace/artifacts/post_verification.log \
+            --pre-log /workspace/artifacts/pre_validation.log \
+            --post-log /workspace/artifacts/post_validation.log \
             --results /workspace/artifacts/results.json \
             --model "$GEMINI_MODEL"
 
       # ----------------------------
-      # Post-validation: rerun tests after agent changes
+      # Post-validation after agent changes
       # ----------------------------
-      - name: Post-validation checks
+      - name: Post-validation
         shell: bash
         run: |
           cd /testbed
-          echo "=== Post-validation test results ===" > /workspace/artifacts/post_verification.log
-          pytest openlibrary/tests --maxfail=0 --disable-warnings --tb=short --color=no \
-            | tee -a /workspace/artifacts/post_verification.log
-          echo "=== End of Post-validation ===" >> /workspace/artifacts/post_verification.log
+          pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/post_validation.log
 
       # ----------------------------
-      # Capture patch of changes made by agent
+      # Capture code changes
       # ----------------------------
       - name: Capture code changes
         if: always()
-        shell: bash
         run: |
           cd /testbed
-          git add -A
-          git diff HEAD~1 HEAD > /workspace/artifacts/changes.patch || true
+          git diff > /workspace/artifacts/changes.patch || true
 
       # ----------------------------
-      # Upload all artifacts
+      # Upload artifacts
       # ----------------------------
       - name: Upload evaluation artifacts
         uses: actions/upload-artifact@v4
