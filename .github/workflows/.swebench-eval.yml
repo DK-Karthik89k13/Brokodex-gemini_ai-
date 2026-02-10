@@ -23,39 +23,51 @@ jobs:
 
     steps:
       # ----------------------------
-      # Checkout harness repo
+      # Checkout harness repo (contains run_agent.py)
       # ----------------------------
       - name: Checkout harness repo
         uses: actions/checkout@v4
-
-      - name: Prepare directories
-        run: |
-          mkdir -p /workspace/artifacts
-          mkdir -p /testbed
+        with:
+          path: /workspace/harness
 
       # ----------------------------
-      # Clone OpenLibrary at commit
+      # Checkout OpenLibrary repo
       # ----------------------------
-      - name: Setup OpenLibrary repository
+      - name: Clone OpenLibrary at commit
         shell: bash
         run: |
-          set -e
+          mkdir -p /testbed
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
           git clone https://github.com/internetarchive/openlibrary.git /testbed
           cd /testbed
           git checkout "$COMMIT_HASH"
 
       # ----------------------------
+      # Prepare directories
+      # ----------------------------
+      - name: Prepare artifacts directory
+        run: mkdir -p /workspace/artifacts
+
+      # ----------------------------
+      # Configure git inside container
+      # ----------------------------
+      - name: Configure Git for CI
+        shell: bash
+        run: |
+          git config --global user.email "ci@localhost"
+          git config --global user.name "CI Bot"
+
+      # ----------------------------
       # System dependencies
       # ----------------------------
-      - name: Install system deps
+      - name: Install system dependencies
         shell: bash
         run: |
           apt-get update
           apt-get install -y build-essential libpq-dev
 
       # ----------------------------
-      # Python runtime dependencies
+      # Python dependencies
       # ----------------------------
       - name: Install Python dependencies
         shell: bash
@@ -78,7 +90,7 @@ jobs:
             python-memcached
 
       # ----------------------------
-      # Install infogami (idempotent)
+      # Install infogami
       # ----------------------------
       - name: Install infogami
         shell: bash
@@ -108,16 +120,25 @@ jobs:
           EOF
 
       # ----------------------------
+      # Copy agent script into /testbed
+      # ----------------------------
+      - name: Copy Gemini agent script
+        shell: bash
+        run: |
+          cp -r /workspace/harness/scripts /testbed/
+
+      # ----------------------------
       # Run Gemini agent and log changes
       # ----------------------------
       - name: Run Gemini agent
         shell: bash
         run: |
-          # Save repo state before running agent
           cd /testbed
+          # Baseline commit for capturing changes
           git add -A
           git commit -m "pre-agent baseline" || true
 
+          # Run agent with auto-correct
           python scripts/run_agent.py \
             --task-id "$TASK_ID" \
             --repo-path /testbed \
@@ -129,12 +150,12 @@ jobs:
             --model "$GEMINI_MODEL" \
             --auto-correct
 
-          # Capture any changes made by the agent
+          # Capture patch of changes made by agent
           git add -A
           git diff HEAD~1 HEAD > /workspace/artifacts/changes.patch || true
 
       # ----------------------------
-      # Upload artifacts
+      # Upload all artifacts
       # ----------------------------
       - name: Upload evaluation artifacts
         uses: actions/upload-artifact@v4
