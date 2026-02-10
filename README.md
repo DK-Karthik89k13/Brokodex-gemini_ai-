@@ -13,27 +13,31 @@ This workflow is designed to:
 
 ## Repository Structure
 
-SWE-bench-Pro-Evaluation/
-├── .github/workflows/
-│ └── swebench-gemini.yml # GitHub Actions workflow for running the Gemini agent
-├── scripts/
-│ └── run_agent.py # Core script executing Gemini evaluation
-├── tools/
-│ └── tools.py # Helper utilities for file operations and subprocess calls
-├── testbed/ # OpenLibrary repository cloned at a specific commit
-│ └── ... # Contains all OpenLibrary source code
-├── infogami/ # Optional Infogami repo cloned/installed for testing
-│ └── ... # Infogami source files
-├── artifacts/ # Generated outputs during evaluation
-│ ├── pre_validation.log # Logs from pre-validation tests
-│ ├── post_validation.log # Logs from post-validation tests
-│ ├── prompts.md # Record of prompts sent to the Gemini agent
-│ ├── results.json # JSON summary of test results and changes
-│ └── changes.patch # Git diff of changes applied during evaluation
-├── extract_metrics.py # Script to extract metrics for reporting
-├── setup_repository.sh # Helper script to setup the repository
-├── pyproject.toml # Python project metadata and dependencies
-└── task.yaml # Task definitions for evaluation
+## Repository Structure
+
+📁 SWE-bench-Pro-Evaluation
+├── 📁 .github
+│   └── 📁 workflows
+│       └── 📄 swebench-gemini.yml  – GitHub Actions workflow for running the Gemini agent
+├── 📁 scripts
+│   └── 📄 run_agent.py              – Core script executing Gemini evaluation
+├── 📁 tools
+│   └── 📄 tools.py                  – Helper utilities for file operations and subprocess calls
+├── 📁 testbed                       – OpenLibrary repository cloned at a specific commit
+│   └── …                            – Contains all OpenLibrary source code
+├── 📁 infogami                      – Optional Infogami repo cloned/installed for testing
+│   └── …                            – Infogami source files
+├── 📁 artifacts                     – Generated outputs during evaluation
+│   ├── 📄 pre_validation.log        – Logs from pre-validation tests
+│   ├── 📄 post_validation.log       – Logs from post-validation tests
+│   ├── 📄 prompts.md                – Record of prompts sent to the Gemini agent
+│   ├── 📄 results.json              – JSON summary of test results and changes
+│   └── 📄 changes.patch             – Git diff of changes applied during evaluation
+├── 📄 extract_metrics.py            – Script to extract metrics for reporting
+├── 📄 setup_repository.sh           – Helper script to setup the repository
+├── 📄 pyproject.toml                – Python project metadata and dependencies
+└── 📄 task.yaml                     – Task definitions for evaluation
+
 
 
 
