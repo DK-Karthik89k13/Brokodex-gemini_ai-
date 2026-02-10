@@ -52,9 +52,7 @@ jobs:
         shell: bash
         run: |
           apt-get update
-          apt-get install -y \
-            build-essential \
-            libpq-dev
+          apt-get install -y build-essential libpq-dev
 
       # ----------------------------
       # Python runtime dependencies
@@ -92,27 +90,34 @@ jobs:
           pip install -e infogami
 
       # ----------------------------
-      # HARD FAIL if imports broken
+      # Pre-validation / sanity check
       # ----------------------------
-      - name: Sanity check OpenLibrary imports
+      - name: Pre-validation checks
         shell: bash
         run: |
           python - << 'EOF'
+          import warnings
+          warnings.filterwarnings("ignore", category=DeprecationWarning)
           import babel
           import simplejson
           import web
           import infogami
-          from infogami.infobase.tests.pytest_wildcard import Wildcard
           import memcache
+          from infogami.infobase.tests.pytest_wildcard import Wildcard
           print("All critical imports OK")
           EOF
 
       # ----------------------------
-      # Run Gemini agent (single source of truth)
+      # Run Gemini agent and log changes
       # ----------------------------
       - name: Run Gemini agent
         shell: bash
         run: |
+          # Save repo state before running agent
+          cd /testbed
+          git add -A
+          git commit -m "pre-agent baseline" || true
+
           python scripts/run_agent.py \
             --task-id "$TASK_ID" \
             --repo-path /testbed \
@@ -121,17 +126,12 @@ jobs:
             --pre-log /workspace/artifacts/pre_verification.log \
             --post-log /workspace/artifacts/post_verification.log \
             --results /workspace/artifacts/results.json \
-            --model "$GEMINI_MODEL"
+            --model "$GEMINI_MODEL" \
+            --auto-correct
 
-      # ----------------------------
-      # Capture diff
-      # ----------------------------
-      - name: Capture code changes
-        if: always()
-        shell: bash
-        run: |
-          cd /testbed
-          git diff > /workspace/artifacts/changes.patch || true
+          # Capture any changes made by the agent
+          git add -A
+          git diff HEAD~1 HEAD > /workspace/artifacts/changes.patch || true
 
       # ----------------------------
       # Upload artifacts
