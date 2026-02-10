@@ -36,7 +36,7 @@ jobs:
           mkdir -p /testbed
 
       # ----------------------------
-      # Clone OpenLibrary at commit
+      # Clone OpenLibrary (idempotent)
       # ----------------------------
       - name: Setup OpenLibrary repository
         shell: bash
@@ -47,26 +47,18 @@ jobs:
           fi
           cd /testbed
           git fetch --all
-          # Optional: checkout commit from task_file if needed
+          git checkout main  # or a commit from your task file
 
       # ----------------------------
-      # Configure Git identity
-      # ----------------------------
-      - name: Configure Git identity
-        run: |
-          git config --global user.email "agent@example.com"
-          git config --global user.name "SWE Agent"
-
-      # ----------------------------
-      # System dependencies
+      # Install system dependencies
       # ----------------------------
       - name: Install system dependencies
         run: |
           apt-get update
-          apt-get install -y build-essential libpq-dev
+          apt-get install -y build-essential libpq-dev python3-dev
 
       # ----------------------------
-      # Python dependencies
+      # Install Python dependencies (all missing packages)
       # ----------------------------
       - name: Install Python dependencies
         run: |
@@ -76,7 +68,8 @@ jobs:
             python-dateutil requests psycopg2-binary Cython setuptools wheel \
             google-generativeai google-genai python-memcached validate_email \
             lxml eventer pymemcache aiofiles luqum \
-            statsd pymarc internetarchive isbnlib deprecated Pillow paapi5-python-sdk || true
+            statsd pymarc internetarchive isbnlib deprecated Pillow \
+            paapi5-python-sdk apscheduler || true
 
       # ----------------------------
       # Install Infogami (idempotent)
@@ -104,7 +97,7 @@ jobs:
       - name: Run Gemini agent
         shell: bash
         run: |
-          python /testbed/scripts/run_agent.py \
+          python scripts/run_agent.py \
             --repo-path /testbed \
             --pre-log /workspace/artifacts/pre_validation.log \
             --post-log /workspace/artifacts/post_validation.log \
@@ -112,15 +105,6 @@ jobs:
             --results /workspace/artifacts/results.json \
             ${GITHUB_EVENT_INPUTS_TASK_FILE:+--task-file "${{ github.event.inputs.task_file }}"} \
             --model "$GEMINI_MODEL"
-
-      # ----------------------------
-      # Post-validation
-      # ----------------------------
-      - name: Post-validation
-        shell: bash
-        run: |
-          cd /testbed
-          pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/post_validation.log
 
       # ----------------------------
       # Capture code changes
