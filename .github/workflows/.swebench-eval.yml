@@ -23,7 +23,7 @@ jobs:
 
     steps:
       # ----------------------------
-      # Checkout harness repo (default workspace)
+      # Checkout harness repo
       # ----------------------------
       - name: Checkout harness repo
         uses: actions/checkout@v4
@@ -100,24 +100,6 @@ jobs:
           pip install -e infogami
 
       # ----------------------------
-      # Pre-validation / sanity check
-      # ----------------------------
-      - name: Pre-validation checks
-        shell: bash
-        run: |
-          python - << 'EOF'
-          import warnings
-          warnings.filterwarnings("ignore", category=DeprecationWarning)
-          import babel
-          import simplejson
-          import web
-          import infogami
-          import memcache
-          from infogami.infobase.tests.pytest_wildcard import Wildcard
-          print("All critical imports OK")
-          EOF
-
-      # ----------------------------
       # Copy Gemini agent script to /testbed
       # ----------------------------
       - name: Copy Gemini agent script
@@ -126,17 +108,35 @@ jobs:
           cp -r $GITHUB_WORKSPACE/scripts /testbed/
 
       # ----------------------------
-      # Run Gemini agent and log changes
+      # Pre-validation: run tests and log failures
+      # ----------------------------
+      - name: Pre-validation checks
+        shell: bash
+        run: |
+          cd /testbed
+          echo "=== Pre-validation test results ===" > /workspace/artifacts/pre_verification.log
+          # Run pytest and capture failures
+          pytest openlibrary/tests --maxfail=0 --disable-warnings --tb=short --color=no \
+            | tee -a /workspace/artifacts/pre_verification.log
+          echo "=== End of Pre-validation ===" >> /workspace/artifacts/pre_verification.log
+
+      # ----------------------------
+      # Baseline commit to track changes
+      # ----------------------------
+      - name: Baseline commit
+        shell: bash
+        run: |
+          cd /testbed
+          git add -A
+          git commit -m "pre-agent baseline" || true
+
+      # ----------------------------
+      # Run Gemini agent
       # ----------------------------
       - name: Run Gemini agent
         shell: bash
         run: |
           cd /testbed
-          # Baseline commit for capturing agent changes
-          git add -A
-          git commit -m "pre-agent baseline" || true
-
-          # Run agent
           python scripts/run_agent.py \
             --task-id "$TASK_ID" \
             --repo-path /testbed \
@@ -147,7 +147,26 @@ jobs:
             --results /workspace/artifacts/results.json \
             --model "$GEMINI_MODEL"
 
-          # Capture patch of changes made by agent
+      # ----------------------------
+      # Post-validation: rerun tests after agent changes
+      # ----------------------------
+      - name: Post-validation checks
+        shell: bash
+        run: |
+          cd /testbed
+          echo "=== Post-validation test results ===" > /workspace/artifacts/post_verification.log
+          pytest openlibrary/tests --maxfail=0 --disable-warnings --tb=short --color=no \
+            | tee -a /workspace/artifacts/post_verification.log
+          echo "=== End of Post-validation ===" >> /workspace/artifacts/post_verification.log
+
+      # ----------------------------
+      # Capture patch of changes made by agent
+      # ----------------------------
+      - name: Capture code changes
+        if: always()
+        shell: bash
+        run: |
+          cd /testbed
           git add -A
           git diff HEAD~1 HEAD > /workspace/artifacts/changes.patch || true
 
