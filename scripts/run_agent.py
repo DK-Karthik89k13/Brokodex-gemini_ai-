@@ -9,7 +9,7 @@ import yaml
 from datetime import datetime, timezone
 
 # Configuration
-API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+API_KEY = os.environ.get("GEMINI_API_KEY")
 MODELS = [
     "claude-3-5-sonnet-latest",
     "claude-3-5-haiku-latest",
