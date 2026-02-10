@@ -62,7 +62,6 @@ jobs:
         shell: bash
         run: |
           python - << 'EOF'
-          import infogami
           from infogami.infobase.tests.pytest_wildcard import Wildcard
           print("infogami import OK")
           EOF
