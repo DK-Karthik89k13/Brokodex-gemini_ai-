@@ -28,6 +28,9 @@ jobs:
       - name: Checkout harness repo
         uses: actions/checkout@v4
 
+      # ----------------------------
+      # Prepare directories
+      # ----------------------------
       - name: Prepare directories
         run: |
           mkdir -p /workspace/artifacts
@@ -59,26 +62,27 @@ jobs:
       - name: Install system dependencies
         run: |
           apt-get update
-          apt-get install -y build-essential libpq-dev
+          apt-get install -y build-essential libpq-dev python3-venv git
 
       # ----------------------------
-      # Python runtime dependencies
+      # Setup virtual environment & Python deps
       # ----------------------------
-      - name: Install Python dependencies
+      - name: Setup Python venv
         run: |
-          cd /testbed
+          python -m venv /testbed/.venv
+          source /testbed/.venv/bin/activate
           python -m pip install --upgrade pip
           pip install \
             pytest pytest-asyncio web.py simplejson babel python-dateutil requests \
             psycopg2-binary Cython setuptools wheel google-generativeai google-genai \
-            python-memcached validate_email lxml eventer pymemcache aiofiles luqum \
-            paapi5_python_sdk
+            python-memcached validate_email lxml eventer pymemcache aiofiles luqum
 
       # ----------------------------
       # Install infogami (idempotent)
       # ----------------------------
       - name: Install infogami
         run: |
+          source /testbed/.venv/bin/activate
           cd /opt
           if [ ! -d infogami ]; then
             git clone https://github.com/internetarchive/infogami.git
@@ -91,6 +95,7 @@ jobs:
       - name: Pre-validation
         shell: bash
         run: |
+          source /testbed/.venv/bin/activate
           cd /testbed
           pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/pre_validation.log
 
@@ -100,6 +105,7 @@ jobs:
       - name: Run Gemini agent
         shell: bash
         run: |
+          source /testbed/.venv/bin/activate
           python /testbed/scripts/run_agent.py \
             --task-id "$TASK_ID" \
             --repo-path /testbed \
@@ -116,6 +122,7 @@ jobs:
       - name: Post-validation
         shell: bash
         run: |
+          source /testbed/.venv/bin/activate
           cd /testbed
           pytest --maxfail=5 --disable-warnings --tb=short | tee /workspace/artifacts/post_validation.log
 
