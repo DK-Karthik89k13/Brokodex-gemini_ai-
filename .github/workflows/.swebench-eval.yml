@@ -22,7 +22,7 @@ jobs:
       GEMINI_MODEL: gemini-1.5-pro
 
     steps:
-      - name: Checkout repository
+      - name: Checkout evaluator repo
         uses: actions/checkout@v4
 
       - name: Prepare directories
@@ -30,12 +30,14 @@ jobs:
           mkdir -p /workspace/artifacts
           mkdir -p /testbed
 
-      - name: Setup OpenLibrary repository
+      - name: Checkout OpenLibrary at task commit
         shell: bash
         run: |
           set -e
           COMMIT_HASH=$(echo "$TASK_ID" | rev | cut -d'-' -f1 | rev)
-          git clone https://github.com/internetarchive/openlibrary.git /testbed || true
+          if [ ! -d /testbed/.git ]; then
+            git clone https://github.com/internetarchive/openlibrary.git /testbed
+          fi
           cd /testbed
           git fetch --all
           git checkout "$COMMIT_HASH"
@@ -47,35 +49,38 @@ jobs:
           python -m pip install --upgrade pip
           pip install web.py pytest Cython setuptools wheel google-genai google-generativeai
 
-      - name: Install infogami (REQUIRED)
+      - name: Install infogami (idempotent)
         shell: bash
         run: |
           cd /testbed
-          git clone https://github.com/internetarchive/infogami.git
+          if [ ! -d infogami ]; then
+            git clone https://github.com/internetarchive/infogami.git
+          fi
           pip install -e infogami
 
-      - name: Post-verification test
+      - name: Sanity check infogami import
         shell: bash
-        env:
-            PYTHONPATH: /testbed
         run: |
-            pip install -e /testbed/infogami
-            cd /testbed/openlibrary
-            python - << 'EOF'
-            import infogami
-            from infogami.infobase.tests.pytest_wildcard import Wildcard
-            print("infogami OK before post-verification")
-            EOF
+          python - << 'EOF'
+          import infogami
+          from infogami.infobase.tests.pytest_wildcard import Wildcard
+          print("infogami import OK")
+          EOF
 
-            python -m pytest \
+      - name: Pre-verification test (expected to fail)
+        shell: bash
+        run: |
+          cd /testbed
+          set +e
+          python -m pytest \
             openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending \
-            -xvs | tee /workspace/artifacts/post_verification.log
-
+            -xvs | tee /workspace/artifacts/pre_verification.log
+          echo $? > /workspace/artifacts/pre_verification.exit
 
       - name: Assert pre-verification failed
         shell: bash
         run: |
-          [ "$(cat /workspace/artifacts/pre_verification.exit)" -ne 0 ] || exit 1
+          [ "$(cat /workspace/artifacts/pre_verification.exit)" -ne 0 ]
 
       - name: Run Gemini agent
         shell: bash
@@ -86,7 +91,6 @@ jobs:
             --log-path /workspace/artifacts/agent.log \
             --prompt-log /workspace/artifacts/prompts.md \
             --pre-log /workspace/artifacts/pre_verification.log \
-            --post-log /workspace/artifacts/post_verification.log \
             --results /workspace/artifacts/results.json \
             --model "$GEMINI_MODEL"
 
