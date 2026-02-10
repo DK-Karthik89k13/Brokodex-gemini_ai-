@@ -1,30 +1,53 @@
 #!/bin/bash
-set -e
+set -euxo pipefail
 
 echo "--- Starting Repository Setup ---"
-echo "Task ID: $TASK_ID"
+echo "Task ID: ${TASK_ID:-<missing>}"
 
-# 1. Clone the OpenLibrary repository into /testbed
-# We use /testbed because your workflow logic points there
-if [ ! -d "/testbed/.git" ]; then
-    echo "Cloning OpenLibrary..."
-    git clone https://github.com/internetarchive/openlibrary.git /testbed
-else
-    echo "Testbed already exists, skipping clone."
+if [ -z "${TASK_ID:-}" ]; then
+  echo "ERROR: TASK_ID is not set"
+  exit 1
 fi
 
-cd /testbed
+REPO_DIR="/testbed"
+REPO_URL="https://github.com/internetarchive/openlibrary.git"
 
-# 2. Checkout the specific broken state
-# For the specific task ID in your default input:
-# internetarchive__openlibrary-c4eebe6677acc4629cb541a98d5e91311444f5d4
-# The commit hash is the last part of the ID: c4eebe6677acc4629cb541a98d5e91311444f5d4
-COMMIT_HASH=$(echo $TASK_ID | rev | cut -d'-' -f1 | rev)
+# --------------------------------------------------
+# 1. Clone if needed
+# --------------------------------------------------
+if [ ! -d "$REPO_DIR/.git" ]; then
+    echo "Cloning OpenLibrary into $REPO_DIR"
+    git clone "$REPO_URL" "$REPO_DIR"
+else
+    echo "Repository already exists"
+fi
 
-echo "Checking out commit: $COMMIT_HASH"
-git checkout $COMMIT_HASH
+cd "$REPO_DIR"
 
-# 3. Optional: Install dependencies if not in the container image
-# pip install -e .
+# --------------------------------------------------
+# 2. Extract commit hash SAFELY
+# --------------------------------------------------
+COMMIT_HASH="${TASK_ID##*-}"
 
-echo "--- Setup Complete ---"
+if ! git cat-file -e "$COMMIT_HASH^{commit}" 2>/dev/null; then
+    echo "ERROR: Commit hash $COMMIT_HASH does not exist"
+    exit 1
+fi
+
+echo "Using commit hash: $COMMIT_HASH"
+
+# --------------------------------------------------
+# 3. Force clean state (CRITICAL)
+# --------------------------------------------------
+echo "Resetting repository to a clean state"
+git fetch origin
+git reset --hard "$COMMIT_HASH"
+git clean -xfd
+
+# --------------------------------------------------
+# 4. Confirm state
+# --------------------------------------------------
+echo "Current HEAD:"
+git rev-parse HEAD
+
+echo "--- Repository Setup Complete ---"
