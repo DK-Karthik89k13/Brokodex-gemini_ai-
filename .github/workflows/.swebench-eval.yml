@@ -76,7 +76,8 @@ jobs:
             setuptools \
             wheel \
             google-generativeai \
-            google-genai
+            google-genai \
+            python-memcached
 
       # ----------------------------
       # Install infogami (idempotent)
@@ -102,6 +103,7 @@ jobs:
           import web
           import infogami
           from infogami.infobase.tests.pytest_wildcard import Wildcard
+          import memcache
           print("All critical imports OK")
           EOF
 
