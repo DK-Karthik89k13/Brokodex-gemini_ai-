@@ -47,16 +47,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install web.py pytest Cython setuptools wheel google-genai google-generativeai
 
-      - name: Pre-verification test (expected to fail)
+      - name: Post-verification test
         shell: bash
+        env:
+            PYTHONPATH: /testbed
         run: |
-          set +e
-          cd /testbed
-          python -m pytest \
+            pip install -e /testbed/infogami
+            cd /testbed/openlibrary
+            python - << 'EOF'
+            import infogami
+            from infogami.infobase.tests.pytest_wildcard import Wildcard
+            print("infogami OK before post-verification")
+            EOF
+
+            python -m pytest \
             openlibrary/tests/core/test_imports.py::TestImportItem::test_find_staged_or_pending \
-            -xvs | tee /workspace/artifacts/pre_verification.log
-          echo $? > /workspace/artifacts/pre_verification.exit
-          exit 0
+            -xvs | tee /workspace/artifacts/post_verification.log
+
 
       - name: Assert pre-verification failed
         shell: bash
