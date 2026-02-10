@@ -49,14 +49,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install web.py pytest Cython setuptools wheel google-genai google-generativeai
 
-      - name: Install infogami (idempotent)
+      - name: Install infogami (clean path)
         shell: bash
         run: |
-          cd /testbed
-          if [ ! -d infogami ]; then
-            git clone https://github.com/internetarchive/infogami.git
-          fi
-          pip install -e infogami
+          set -eux
+          rm -rf /opt/infogami
+          git clone https://github.com/internetarchive/infogami.git /opt/infogami
+          pip install -e /opt/infogami
+        env:
+          PYTHONPATH: /testbed:/opt/infogami
+
 
       - name: Sanity check infogami import
         shell: bash
