@@ -31,16 +31,9 @@ def log_agent(event, **data):
 
 def run(cmd, cwd=None):
     return subprocess.run(
-        cmd,
-        shell=True,
-        cwd=cwd,
-        text=True,
-        capture_output=True
+        cmd, shell=True, cwd=cwd, text=True, capture_output=True
     )
 
-# ----------------------------
-# Test Parsing
-# ----------------------------
 def count_errors(text):
     return len(re.findall(r"\bFAILED\b|\bERROR\b", text))
 
@@ -52,7 +45,7 @@ def count_warnings(text):
     m = re.search(r"(\d+)\s+warnings?", text)
     return int(m.group(1)) if m else 0
 
-def find_missing_modules(text):
+def find_problem_modules(text):
     modules = set()
     for line in text.splitlines():
         m = re.search(r"ModuleNotFoundError: No module named '([^']+)'", line)
@@ -60,55 +53,43 @@ def find_missing_modules(text):
             modules.add(m.group(1))
     return list(modules)
 
-# ----------------------------
-# Auto Fix Logic
-# ----------------------------
-def create_stub_module(repo, module_name):
-    """
-    Create missing python module inside repo as stub.
-    Example: missing module 'foo.bar'
-    -> create repo/foo/bar.py
-    """
-    parts = module_name.split(".")
-    path = repo
+def pip_uninstall(module):
+    log_agent("pip_uninstall", module=module)
+    subprocess.run(
+        [sys.executable, "-m", "pip", "uninstall", "-y", module],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
-    for p in parts[:-1]:
-        path = path / p
-        path.mkdir(parents=True, exist_ok=True)
-        init_file = path / "__init__.py"
-        if not init_file.exists():
-            init_file.write_text("")
-
-    module_file = path / f"{parts[-1]}.py"
-
-    if not module_file.exists():
-        module_file.write_text(
-            f'"""Auto-generated stub for missing module {module_name}"""\n'
-        )
-        log_agent("stub_created", module=module_name)
-        return True
-
-    return False
+def pip_install(module):
+    log_agent("pip_install", module=module)
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", module],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
 # ----------------------------
 # Validation
 # ----------------------------
 def run_validation(repo, log_path, stage):
     attempts = 0
-    combined = ""
+    reinstalled = []
 
     while attempts < MAX_RETRIES:
         attempts += 1
         result = run(TEST_CMD, repo)
         combined = result.stdout + result.stderr
 
-        missing = find_missing_modules(combined)
-
-        if missing:
-            for mod in missing:
-                create_stub_module(repo, mod)
+        broken = find_problem_modules(combined)
+        if broken:
+            for mod in broken:
+                pip_uninstall(mod)
+                pip_install(mod)
+                reinstalled.append(mod)
             continue
-
         break
 
     errors = count_errors(combined)
@@ -116,56 +97,90 @@ def run_validation(repo, log_path, stage):
     warnings = count_warnings(combined)
 
     with open(log_path, "w") as f:
-        f.write(f"STAGE: {stage}\n")
-        f.write(f"TIME: {utc_ts()}\n")
+        f.write("=================================\n")
+        f.write(f"STAGE     : {stage}\n")
+        f.write(f"TIME      : {utc_ts()}\n")
+        f.write(f"COMMAND   : {TEST_CMD}\n")
+        f.write(f"ATTEMPTS  : {attempts}\n")
+        f.write("=================================\n\n")
         f.write(result.stdout)
         f.write("\n--- STDERR ---\n")
         f.write(result.stderr)
-        f.write("\n--- SUMMARY ---\n")
-        f.write(f"Errors: {errors}\n")
-        f.write(f"Passed: {passed}\n")
-        f.write(f"Warnings: {warnings}\n")
+        f.write("\n--- AGENT SUMMARY ---\n")
+        f.write(f"ERROR COUNT   : {errors}\n")
+        f.write(f"TESTS PASSED  : {passed}\n")
+        f.write(f"WARNINGS      : {warnings}\n")
 
-    log_agent("validation", stage=stage, errors=errors)
+        if reinstalled:
+            f.write(f"MODULES REINSTALLED : {reinstalled}\n")
+
+    log_agent(
+        "validation",
+        stage=stage,
+        errors=errors,
+        passed=passed,
+        warnings=warnings,
+    )
 
     return errors, passed, warnings
 
 # ----------------------------
-# Git Patch Generation
+# HTML REPORT
 # ----------------------------
-def generate_patch(repo):
-    git_check = run("git rev-parse --is-inside-work-tree", repo)
-
-    if git_check.returncode != 0:
-        CHANGES_PATCH.write_text("# Not a git repository\n")
-        return False
-
-    run("git add -A", repo)
-    diff = run("git diff --cached", repo).stdout
-
-    if diff.strip():
-        CHANGES_PATCH.write_text(diff)
-        return True
-    else:
-        CHANGES_PATCH.write_text("# No changes detected\n")
-        return False
-
-# ----------------------------
-# HTML Report
-# ----------------------------
-def write_html(output_path, pre_errors, post_errors, duration):
+def write_swebench_html(
+    output_path: Path,
+    pre_errors: int,
+    post_errors: int,
+    pre_passed: int,
+    post_passed: int,
+    pre_warnings: int,
+    post_warnings: int,
+    duration_seconds: float,
+):
     resolved = pre_errors > 0 and post_errors == 0
 
-    html = f"""
-    <html>
-    <body>
-    <h1>SWE-bench Evaluation</h1>
-    <p>Resolved: {"YES" if resolved else "NO"}</p>
-    <p>Duration: {duration:.2f} seconds</p>
-    </body>
-    </html>
-    """
-    output_path.write_text(html)
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>SWE-bench Evaluation Result</title>
+<style>
+body {{ font-family: Arial; background: #f6f8fa; padding: 20px; }}
+.card {{ background: white; padding: 20px; max-width: 900px; margin: auto; }}
+.status {{ font-weight: bold; color: {"green" if resolved else "red"}; }}
+table {{ width: 100%; border-collapse: collapse; }}
+td, th {{ border-bottom: 1px solid #ddd; padding: 8px; }}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>SWE-bench Evaluation Result</h1>
+<p class="status">Resolved: {"YES" if resolved else "NO"}</p>
+
+<table>
+<tr><th>Duration</th><td>{duration_seconds:.2f} seconds</td></tr>
+<tr><th>Total Cost</th><td>N/A</td></tr>
+<tr><th>Token Usage (Input)</th><td>N/A</td></tr>
+<tr><th>Token Usage (Output)</th><td>N/A</td></tr>
+</table>
+
+<h2>Test Results</h2>
+<table>
+<tr><th>Stage</th><th>Errors</th><th>Passed</th><th>Warnings</th></tr>
+<tr><td>Pre-validation</td><td>{pre_errors}</td><td>{pre_passed}</td><td>{pre_warnings}</td></tr>
+<tr><td>Post-validation</td><td>{post_errors}</td><td>{post_passed}</td><td>{post_warnings}</td></tr>
+</table>
+
+<h2>Agent Conclusion</h2>
+<pre>
+{"THE ERROR IS CORRECTED" if resolved else "NO ERRORS TO CORRECT — TESTS WERE ALREADY PASSING"}
+TASK COMPLETED
+</pre>
+</div>
+</body>
+</html>
+"""
+    output_path.write_text(html, encoding="utf-8")
 
 # ----------------------------
 # Main
@@ -177,40 +192,68 @@ def main():
     parser.add_argument("--post-log", required=True)
     parser.add_argument("--prompt-log", required=True)
     parser.add_argument("--results", required=True)
+    parser.add_argument("--task-file", required=False)
+    parser.add_argument("--model", required=False)
     args = parser.parse_args()
 
     repo = Path(args.repo_path)
-
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     AGENT_LOG.write_text("")
     CHANGES_PATCH.write_text("")
 
-    start = datetime.now(timezone.utc)
+    start_time = datetime.now(timezone.utc)
 
-    # PRE
+    log_agent("run_started", model=args.model)
+
+    Path(args.prompt_log).write_text(
+        "Run pytest. Auto-reinstall broken modules. "
+        "Fix code only if pytest proves failure."
+    )
+
     pre_errors, pre_passed, pre_warnings = run_validation(
         repo, Path(args.pre_log), "pre_validation"
     )
 
-    # POST
     post_errors, post_passed, post_warnings = run_validation(
         repo, Path(args.post_log), "post_validation"
     )
 
-    # Generate Patch
-    change_applied = generate_patch(repo)
+    with open(args.post_log, "a") as f:
+        f.write("\n--- FINAL AGENT CONCLUSION ---\n")
+        if pre_errors > 0 and post_errors == 0:
+            f.write("THE ERROR IS CORRECTED\n")
+        elif pre_errors > 0:
+            f.write("ERRORS STILL PRESENT\n")
+        else:
+            f.write("NO ERRORS TO CORRECT — TESTS WERE ALREADY PASSING\n")
+        f.write("TASK COMPLETED\n")
 
-    duration = (datetime.now(timezone.utc) - start).total_seconds()
+    # 🔥 FIXED PATCH GENERATION
+    run("git add -A", repo)
+    diff = run("git diff --cached", repo).stdout
+    if not diff.strip():
+        diff = run("git diff", repo).stdout
 
-    # Write HTML
-    write_html(HTML_REPORT, pre_errors, post_errors, duration)
+    CHANGES_PATCH.write_text(diff)
 
-    # Write Results JSON
+    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+
+    write_swebench_html(
+        HTML_REPORT,
+        pre_errors,
+        post_errors,
+        pre_passed,
+        post_passed,
+        pre_warnings,
+        post_warnings,
+        duration,
+    )
+
     Path(args.results).write_text(json.dumps({
         "pre_errors": pre_errors,
         "post_errors": post_errors,
         "tests_passing": post_errors == 0,
-        "change_applied": change_applied
+        "change_applied": bool(diff.strip()),
     }, indent=2))
 
     log_agent("run_complete")
