@@ -31,7 +31,11 @@ def log_agent(event, **data):
 
 def run(cmd, cwd=None):
     return subprocess.run(
-        cmd, shell=True, cwd=cwd, text=True, capture_output=True
+        cmd,
+        shell=True,
+        cwd=cwd,
+        text=True,
+        capture_output=True
     )
 
 def count_errors(text):
@@ -77,6 +81,7 @@ def pip_install(module):
 def run_validation(repo, log_path, stage):
     attempts = 0
     reinstalled = []
+    combined = ""
 
     while attempts < MAX_RETRIES:
         attempts += 1
@@ -125,7 +130,7 @@ def run_validation(repo, log_path, stage):
     return errors, passed, warnings
 
 # ----------------------------
-# HTML REPORT (ADDED ONLY)
+# HTML REPORT
 # ----------------------------
 def write_swebench_html(
     output_path: Path,
@@ -183,6 +188,26 @@ TASK COMPLETED
     output_path.write_text(html, encoding="utf-8")
 
 # ----------------------------
+# Generate Git Patch
+# ----------------------------
+def generate_patch(repo):
+    git_check = run("git rev-parse --is-inside-work-tree", repo)
+
+    if git_check.returncode != 0:
+        CHANGES_PATCH.write_text("# Not a git repository\n")
+        return False
+
+    run("git add -A", repo)
+    diff = run("git diff --cached", repo).stdout
+
+    if diff.strip():
+        CHANGES_PATCH.write_text(diff)
+        return True
+    else:
+        CHANGES_PATCH.write_text("# No changes detected in repository\n")
+        return False
+
+# ----------------------------
 # Main
 # ----------------------------
 def main():
@@ -197,17 +222,16 @@ def main():
     args = parser.parse_args()
 
     repo = Path(args.repo_path)
+
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     AGENT_LOG.write_text("")
     CHANGES_PATCH.write_text("")
 
     start_time = datetime.now(timezone.utc)
-
     log_agent("run_started", model=args.model)
 
     Path(args.prompt_log).write_text(
-        "Run pytest. Auto-reinstall broken modules. "
-        "Fix code only if pytest proves failure."
+        "Run pytest. Auto-reinstall broken modules. Fix code only if pytest proves failure."
     )
 
     pre_errors, pre_passed, pre_warnings = run_validation(
@@ -228,8 +252,7 @@ def main():
             f.write("NO ERRORS TO CORRECT — TESTS WERE ALREADY PASSING\n")
         f.write("TASK COMPLETED\n")
 
-    diff = run("git diff", repo).stdout
-    CHANGES_PATCH.write_text(diff)
+    change_applied = generate_patch(repo)
 
     duration = (datetime.now(timezone.utc) - start_time).total_seconds()
 
@@ -248,7 +271,7 @@ def main():
         "pre_errors": pre_errors,
         "post_errors": post_errors,
         "tests_passing": post_errors == 0,
-        "change_applied": bool(diff.strip()),
+        "change_applied": change_applied,
     }, indent=2))
 
     log_agent("run_complete")
